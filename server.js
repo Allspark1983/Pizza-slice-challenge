@@ -1,4 +1,4 @@
-// The server chooses the pizza, checks each cut, and records the result.
+// The server schedules pizza batches, checks each swipe, and records the result.
 import { createServer } from 'node:http';
 import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -6,7 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   validateRules, createRun, advanceRun, applyRunCut, toPublicRun,
-  isRunOver, PIZZA_SLICES, SCORE_RULES, DIFFICULTY_LEVELS
+  isRunOver, PIZZA_SLICES, SCORE_RULES, DIFFICULTY_LEVELS, GRENADE_DURATION_MS
 } from './game.js';
 
 const projectDirectory = dirname(fileURLToPath(import.meta.url));
@@ -92,8 +92,8 @@ function cleanName(value) {
 function cleanPoint(value) {
   requireKeys(value, ['x', 'y'], 'Each cut endpoint needs only x and y coordinates.');
   if (!Number.isFinite(value.x) || !Number.isFinite(value.y) ||
-      Math.abs(value.x) > 3 || Math.abs(value.y) > 3) {
-    throw new RequestError(400, 'Cut coordinates must be numbers between -3 and 3.');
+      Math.abs(value.x) > 200 || Math.abs(value.y) > 200) {
+    throw new RequestError(400, 'Cut coordinates must be numbers between -200 and 200.');
   }
   return { x: value.x, y: value.y };
 }
@@ -103,7 +103,8 @@ function publicPlayer(player) {
     id: player.id, name: player.name,
     runsPlayed: player.runsPlayed, runsWon: player.runsWon, runsLost: player.runsLost,
     bestScore: player.bestScore, bestPizzaCount: player.bestPizzaCount,
-    totalPizzasCompleted: player.totalPizzasCompleted
+    totalPizzasCompleted: player.totalPizzasCompleted,
+    previousBestScore: player.previousBestScore
   };
 }
 
@@ -121,81 +122,121 @@ function validCount(value) {
   return Number.isSafeInteger(value) && value >= 0;
 }
 
-// Check saved snapshots without choosing new pizzas or resetting their difficulty.
-function validSavedPizza(pizza, run, isLast = false) {
+// A snapshot keeps the first cut's angle and only the cuts actually made.
+const wavePositions = {
+  1: [[0, 0]],
+  2: [[-70, 0], [70, 0]],
+  3: [[-70, -50], [70, -50], [0, 65]]
+};
+
+function validSavedPizza(pizza, run, outcome = null) {
   if (!pizza || typeof pizza !== 'object' || Array.isArray(pizza) || !validId(pizza.id) ||
       !Number.isInteger(pizza.pizzaSize) || !Object.hasOwn(PIZZA_SLICES, pizza.pizzaSize) ||
       pizza.requiredSlices !== PIZZA_SLICES[pizza.pizzaSize] ||
-      pizza.requiredCuts !== pizza.requiredSlices / 2) return false;
-  if (!Array.isArray(pizza.guideAngles) || pizza.guideAngles.length !== pizza.requiredCuts ||
-      !pizza.guideAngles.every((angle) => Number.isInteger(angle) && angle >= 0 && angle < 180) ||
-      pizza.guideAngles[0] % 15 !== 0 || !pizza.guideAngles.every((angle, index) =>
-        angle === (pizza.guideAngles[0] + index * 180 / pizza.requiredCuts) % 180)) return false;
+      pizza.requiredCuts !== pizza.requiredSlices / 2 || pizza.radius !== 3 * pizza.pizzaSize ||
+      !Object.values(wavePositions).flat().some(([x, y]) => pizza.x === x && pizza.y === y)) return false;
   if (!Array.isArray(pizza.completedCuts) || new Set(pizza.completedCuts).size !== pizza.completedCuts.length ||
       !pizza.completedCuts.every((index) => Number.isInteger(index) && index >= 0 && index < pizza.requiredCuts)) return false;
+  if (pizza.completedCuts.length === 0) {
+    if (pizza.anchorAngle !== null) return false;
+  } else if (!Number.isFinite(pizza.anchorAngle) || pizza.anchorAngle < 0 || pizza.anchorAngle >= 180 ||
+      pizza.completedCuts[0] !== 0) return false;
+  if (outcome === 'completed' ? pizza.completedCuts.length !== pizza.requiredCuts :
+      pizza.completedCuts.length >= pizza.requiredCuts) return false;
 
-  const level = DIFFICULTY_LEVELS.find((item) => item.level === pizza.difficultyLevel);
-  if (!level || pizza.angleToleranceDeg !== level.angleToleranceDeg) return false;
   const grenade = pizza.grenade;
   if (grenade !== null) {
     if (!hasExactKeys(grenade, ['x', 'y', 'radius', 'appearsAt', 'disappearsAt']) ||
-        !Number.isFinite(grenade.x) || !Number.isFinite(grenade.y) || grenade.radius !== 0.19 ||
-        Math.abs(Math.hypot(grenade.x, grenade.y) - 0.70) > 1e-9 ||
+        !Number.isFinite(grenade.x) || !Number.isFinite(grenade.y) || grenade.radius !== 0.20 * pizza.radius ||
+        Math.abs(Math.hypot(grenade.x - pizza.x, grenade.y - pizza.y) - 0.65 * pizza.radius) > 1e-8 ||
         !validCount(grenade.appearsAt) || !validCount(grenade.disappearsAt) ||
         grenade.appearsAt < run.startsAt || grenade.appearsAt >= run.endsAt ||
-        grenade.disappearsAt - grenade.appearsAt !== level.grenadeDurationMs) return false;
-    if (!pizza.guideAngles.some((angle) => {
-      const radians = angle * Math.PI / 180;
-      return Math.abs(grenade.x * Math.sin(radians) - grenade.y * Math.cos(radians)) <= 1e-9;
-    })) return false;
+        (grenade.appearsAt - run.startsAt) % run.rulesSnapshot.waveDurationMs !== 0 ||
+        grenade.disappearsAt - grenade.appearsAt !== GRENADE_DURATION_MS) return false;
+    if (outcome === null && grenade.appearsAt !== run.waveStartsAt) return false;
   }
-
-  if (!isLast) {
-    return !Object.hasOwn(pizza, 'outcome') && pizza.completedCuts.length < pizza.requiredCuts;
-  }
-  if (pizza.outcome === 'completed') return pizza.completedCuts.length === pizza.requiredCuts;
-  if (pizza.outcome === 'spoiled') return pizza.completedCuts.length < pizza.requiredCuts;
-  return pizza.outcome === 'grenade' && grenade !== null && pizza.completedCuts.length < pizza.requiredCuts;
+  return outcome !== 'grenade' || grenade !== null;
 }
 
 function validSavedRun(run) {
   if (!run || typeof run !== 'object' || Array.isArray(run) ||
-      !validId(run.id) || !validId(run.playerId) || !validId(run.requestId)) return false;
+      !validId(run.id) || !validId(run.playerId) || !validId(run.requestId) || !validId(run.waveId)) return false;
   let snapshot;
   try { snapshot = validateRules(run.rulesSnapshot); }
   catch { return false; }
-  if (![run.createdAt, run.startsAt, run.endsAt].every(validCount) ||
+  if (![run.createdAt, run.startsAt, run.endsAt, run.waveStartsAt, run.waveEndsAt].every(validCount) ||
       run.startsAt - run.createdAt !== snapshot.preparationMs ||
-      run.runDurationMs !== snapshot.runDurationMs ||
-      run.endsAt - run.startsAt !== run.runDurationMs) return false;
-  if (![run.bestBefore, run.targetScore, run.score, run.pizzasCompleted,
-    run.pizzasSpoiled, run.grenadesHit].every(validCount) ||
-      run.targetScore !== run.bestBefore + 1 ||
-      run.score / SCORE_RULES.completedPizza > run.pizzasCompleted ||
-      !hasExactKeys(run.pizzaCountsBySize, ['8', '10', '14']) ||
+      run.runDurationMs !== snapshot.runDurationMs || run.endsAt - run.startsAt !== run.runDurationMs ||
+      !Number.isInteger(run.waveIndex) || run.waveIndex < 0 || run.waveIndex >= 12 ||
+      run.waveStartsAt !== run.startsAt + run.waveIndex * snapshot.waveDurationMs ||
+      run.waveEndsAt !== run.waveStartsAt + snapshot.waveDurationMs) return false;
+  const levelForWave = (index) => DIFFICULTY_LEVELS.findLast((level) => index * snapshot.waveDurationMs >= level.startsAfterMs);
+  const level = levelForWave(run.waveIndex);
+  if (run.difficultyLevel !== level.level || !Array.isArray(run.pizzas) || run.pizzas.length > level.pizzasPerWave) return false;
+  if (![run.bestBefore, run.targetScore, run.score, run.pizzasCompleted, run.pizzasSpoiled,
+    run.grenadesHit, run.pizzasMissed, run.eventSerial].every(validCount) ||
+      run.targetScore !== run.bestBefore + 1 || run.score / SCORE_RULES.completedPizza > run.pizzasCompleted ||
+      !hasExactKeys(run.pizzaCountsBySize, ['10', '12', '14']) ||
       !Object.values(run.pizzaCountsBySize).every(validCount) ||
       Object.values(run.pizzaCountsBySize).reduce((sum, count) => sum + count, 0) !== run.pizzasCompleted) return false;
+  const resolvedPizzas = run.pizzasCompleted + run.pizzasSpoiled + run.grenadesHit + run.pizzasMissed;
+  let offeredPizzas = 0;
+  for (let index = 0; index <= run.waveIndex; index += 1) offeredPizzas += levelForWave(index).pizzasPerWave;
+  if (resolvedPizzas + run.pizzas.length !== offeredPizzas || run.eventSerial !== resolvedPizzas) return false;
   if (!validIdList(run.startRequestIds) || !run.startRequestIds.includes(run.requestId) ||
       !validIdList(run.cutRequestIds) ||
       run.startRequestIds.length + run.cutRequestIds.length > requestHistoryLimit ||
       typeof run.recorded !== 'boolean') return false;
-  if (!validSavedPizza(run.currentPizza, run)) return false;
-  const hasFinishedPizza = run.pizzasCompleted > 0 || run.pizzasSpoiled > 0 || run.grenadesHit > 0;
-  if (hasFinishedPizza) {
-    if (!validSavedPizza(run.lastPizza, run, true) || run.lastPizza.id === run.currentPizza.id) return false;
-    if (run.lastPizza.outcome === 'completed' && run.pizzaCountsBySize[run.lastPizza.pizzaSize] === 0) return false;
-    if (run.lastPizza.outcome === 'spoiled' && run.pizzasSpoiled === 0) return false;
-    if (run.lastPizza.outcome === 'grenade' && run.grenadesHit === 0) return false;
-  } else if (run.lastPizza !== null) return false;
+
+  const pizzaIds = new Set();
+  const positions = new Set();
+  for (const pizza of run.pizzas) {
+    const position = `${pizza.x},${pizza.y}`;
+    if (!validSavedPizza(pizza, run) || pizzaIds.has(pizza.id) || positions.has(position) ||
+        !wavePositions[level.pizzasPerWave].some(([x, y]) => pizza.x === x && pizza.y === y)) return false;
+    pizzaIds.add(pizza.id);
+    positions.add(position);
+  }
+  if (!Array.isArray(run.lastEvents) || run.lastEvents.length > 3 || run.lastEvents.length > run.eventSerial ||
+      (run.lastEvents.length === 0) !== (run.eventSerial === 0)) return false;
+  let lastSerial = 0;
+  for (const event of run.lastEvents) {
+    if (!hasExactKeys(event, ['id', 'outcome', 'pizza']) || typeof event.id !== 'string' ||
+        !['completed', 'spoiled', 'grenade', 'missed'].includes(event.outcome) ||
+        !validSavedPizza(event.pizza, run, event.outcome) || pizzaIds.has(event.pizza.id)) return false;
+    const prefix = `${run.id}-event-`;
+    const serial = Number(event.id.slice(prefix.length));
+    if (!validCount(serial) || serial <= lastSerial || serial > run.eventSerial ||
+        event.id !== prefix + serial) return false;
+    pizzaIds.add(event.pizza.id);
+    lastSerial = serial;
+  }
+  if (lastSerial !== run.eventSerial) return false;
 
   if (run.status === 'countdown' || run.status === 'playing') {
-    return run.reason === null && run.elapsedMs === null && run.finishedAt === null &&
-      !run.recorded && (run.status === 'playing' ||
-        (!hasFinishedPizza && run.currentPizza.completedCuts.length === 0));
+    return run.reason === null && run.elapsedMs === null && run.finishedAt === null && !run.recorded &&
+      (run.status === 'playing' || (run.waveIndex === 0 && resolvedPizzas === 0 &&
+        run.pizzas.every((pizza) => pizza.completedCuts.length === 0)));
   }
   const won = run.score > run.bestBefore;
   return run.status === (won ? 'won' : 'lost') && run.reason === (won ? 'personal_best' : 'time_up') &&
-    run.elapsedMs === run.runDurationMs && run.finishedAt === run.endsAt;
+    run.elapsedMs === run.runDurationMs && run.finishedAt === run.endsAt && run.waveIndex === 11 && run.pizzas.length === 0;
+}
+
+function validSavedPlayer(player, legacy = false) {
+  const keys = ['id', 'name', 'runsPlayed', 'runsWon', 'runsLost', 'bestScore', 'bestPizzaCount', 'totalPizzasCompleted'];
+  if (!legacy) keys.push('previousBestScore');
+  if (!hasExactKeys(player, keys) || !validId(player.id) || typeof player.name !== 'string' ||
+      !player.name || player.name.length > 24 || player.name !== player.name.trim() ||
+      ![player.runsPlayed, player.runsWon, player.runsLost, player.bestScore,
+        player.bestPizzaCount, player.totalPizzasCompleted].every(validCount) ||
+      player.runsWon + player.runsLost !== player.runsPlayed ||
+      player.bestPizzaCount > player.totalPizzasCompleted ||
+      player.bestScore / SCORE_RULES.completedPizza > player.bestPizzaCount ||
+      (player.runsPlayed === 0 && player.totalPizzasCompleted !== 0) ||
+      (player.runsWon > 0 && player.bestScore === 0)) return false;
+  return legacy || ((player.previousBestScore === null || validCount(player.previousBestScore)) &&
+    player.bestScore <= 240 && player.bestPizzaCount <= 24);
 }
 
 function validSavedState(state) {
@@ -203,18 +244,7 @@ function validSavedState(state) {
   const playersById = new Map();
   const names = new Set();
   for (const player of state.players) {
-    if (!hasExactKeys(player, ['id', 'name', 'runsPlayed', 'runsWon', 'runsLost',
-      'bestScore', 'bestPizzaCount', 'totalPizzasCompleted']) ||
-        !validId(player.id) || playersById.has(player.id) || typeof player.name !== 'string' ||
-        !player.name || player.name.length > 24 || player.name !== player.name.trim() ||
-        names.has(player.name.toLowerCase()) ||
-        ![player.runsPlayed, player.runsWon, player.runsLost, player.bestScore,
-          player.bestPizzaCount, player.totalPizzasCompleted].every(validCount) ||
-        player.runsWon + player.runsLost !== player.runsPlayed ||
-        player.bestPizzaCount > player.totalPizzasCompleted ||
-        player.bestScore / SCORE_RULES.completedPizza > player.bestPizzaCount ||
-        (player.runsPlayed === 0 && player.totalPizzasCompleted !== 0) ||
-        (player.runsWon > 0 && player.bestScore === 0)) return false;
+    if (!validSavedPlayer(player) || playersById.has(player.id) || names.has(player.name.toLowerCase())) return false;
     playersById.set(player.id, player);
     names.add(player.name.toLowerCase());
   }
@@ -249,7 +279,8 @@ function validSavedState(state) {
 }
 
 export async function createAppServer({
-  dataFile = join(projectDirectory, '.data', 'rush.json'),
+  dataFile = join(projectDirectory, '.data', 'rush-3.1.json'),
+  legacyDataFile = join(dirname(dataFile), 'rush.json'),
   publicDir = projectDirectory,
   clock = Date.now,
   random = Math.random
@@ -267,18 +298,50 @@ export async function createAppServer({
   // All API operations use one queue, including reads which may notice a timeout.
   let operationQueue = Promise.resolve();
 
+  async function importLegacyProfiles() {
+    let text;
+    try {
+      text = await readFile(legacyDataFile, 'utf8');
+    } catch (error) {
+      if (error.code === 'ENOENT') return { state: { players: [], runs: [] }, needsSave: false };
+      throw new RequestError(500, 'Previous progress could not be read. The original file has not been changed.');
+    }
+    try {
+      const legacy = JSON.parse(text);
+      if (!hasExactKeys(legacy, ['players', 'runs']) || !Array.isArray(legacy.players) ||
+          !Array.isArray(legacy.runs)) throw new Error('Invalid previous progress');
+      const ids = new Set();
+      const names = new Set();
+      const players = legacy.players.map((player) => {
+        if (!validSavedPlayer(player, true) || ids.has(player.id) || names.has(player.name.toLowerCase())) {
+          throw new Error('Invalid previous profile');
+        }
+        ids.add(player.id);
+        names.add(player.name.toLowerCase());
+        return {
+          id: player.id, name: player.name, runsPlayed: 0, runsWon: 0, runsLost: 0,
+          bestScore: 0, bestPizzaCount: 0, totalPizzasCompleted: 0, previousBestScore: player.bestScore
+        };
+      });
+      // Save the import even on GET, so a later rename/delete cannot be undone by reimport.
+      return { state: { players, runs: [] }, needsSave: true };
+    } catch {
+      throw new RequestError(500, 'Previous progress is invalid. The original file has not been changed.');
+    }
+  }
+
   async function loadState() {
     let text;
     try {
       text = await readFile(dataFile, 'utf8');
     } catch (error) {
-      if (error.code === 'ENOENT') return { players: [], runs: [] };
+      if (error.code === 'ENOENT') return importLegacyProfiles();
       throw new RequestError(500, 'Saved progress could not be read. Please check the data file.');
     }
     try {
       const state = JSON.parse(text);
       if (!validSavedState(state)) throw new Error('Invalid saved progress');
-      return state;
+      return { state, needsSave: false };
     } catch {
       throw new RequestError(500, 'Saved progress is invalid. The file has not been changed.');
     }
@@ -321,7 +384,7 @@ export async function createAppServer({
   function reconcileRuns(state, nowMs) {
     let changed = false;
     state.runs = state.runs.map((run) => {
-      const updated = advanceRun(run, nowMs);
+      const updated = advanceRun(run, nowMs, random, randomUUID);
       if (updated !== run) changed = true;
       if (recordResult(state, updated)) changed = true;
       return updated;
@@ -340,10 +403,11 @@ export async function createAppServer({
 
   function transact(operation) {
     const result = operationQueue.then(async () => {
-      const saved = await loadState();
+      const { state: saved, needsSave } = await loadState();
       const nowMs = clock();
       if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new RequestError(500, 'The server clock is unavailable.');
       let reconciled = reconcileRuns(saved, nowMs);
+      if (needsSave) reconciled = true;
       if (trimHistory(saved)) reconciled = true;
       // A rejected operation cannot partially change the reconciled data.
       const working = structuredClone(saved);
@@ -387,7 +451,8 @@ export async function createAppServer({
     if (run.status === 'won') return `New personal best: ${run.score} points!`;
     if (run.status === 'lost') return `Time's up! You scored ${run.score} points. Try again to beat your best.`;
     if (run.status === 'countdown') return 'Get ready. Wait for Go before cutting.';
-    return 'Complete pizzas, follow the guides, and watch for grenades. Keep going until the minute ends.';
+    return run.pizzas.length === 0 ? 'Batch cleared! The next pizzas arrive on schedule.' :
+      'Your first cut sets the angle. Make equal slices before this batch expires.';
   }
 
   function envelope(state, run, nowMs, feedback = runFeedback(run)) {
@@ -420,7 +485,7 @@ export async function createAppServer({
             checkUniqueName(state.players, name);
             const player = {
               id: randomUUID(), name, runsPlayed: 0, runsWon: 0, runsLost: 0,
-              bestScore: 0, bestPizzaCount: 0, totalPizzasCompleted: 0
+              bestScore: 0, bestPizzaCount: 0, totalPizzasCompleted: 0, previousBestScore: null
             };
             state.players.push(player);
             return { status: 201, changed: true, body: () => publicPlayer(player) };
@@ -480,9 +545,9 @@ export async function createAppServer({
         if (request.method !== 'POST') methodNotAllowed(response, ['POST']);
         const id = decodeId(pathname.split('/')[3]);
         const body = await readJson(request);
-        requireKeys(body, ['requestId', 'pizzaId', 'start', 'end'], 'A cut needs only requestId, pizzaId, start and end.');
+        requireKeys(body, ['requestId', 'waveId', 'start', 'end'], 'A cut needs only requestId, waveId, start and end.');
         const requestId = cleanId(body.requestId);
-        const stroke = { pizzaId: cleanId(body.pizzaId), start: cleanPoint(body.start), end: cleanPoint(body.end) };
+        const stroke = { waveId: cleanId(body.waveId), start: cleanPoint(body.start), end: cleanPoint(body.end) };
         answer = await transact((state, nowMs) => {
           const run = findRun(state, id);
           if (state.runs.some((item) => item.startRequestIds.includes(requestId))) {
@@ -544,7 +609,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     const server = await createAppServer();
     const host = process.env.HOST || '127.0.0.1';
     server.listen(Number(process.env.PORT || 3000), host, () => {
-      console.log(`Pizza Slice Rush Version 3 is running at http://${host}:${server.address().port}`);
+      console.log(`Pizza Slice Rush Version 3.1 is running at http://${host}:${server.address().port}`);
     });
   } catch (error) {
     console.error(error.message);

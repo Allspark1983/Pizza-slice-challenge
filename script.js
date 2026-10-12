@@ -1,4 +1,4 @@
-import { validateRules, strokeForAngle, SCORE_RULES, DIFFICULTY_LEVELS } from './game.js';
+import { validateRules, strokeForAngle, strokeForPizza, SCORE_RULES, DIFFICULTY_LEVELS } from './game.js';
 
 // 1. SELECT: find page elements once. Timer ticks never replace the SVG or form.
 const elements = {
@@ -21,12 +21,15 @@ const elements = {
   profileTotalPizzas: document.querySelector('#profile-total-pizzas'),
   profileRunsWon: document.querySelector('#profile-runs-won'),
   profileRunsLost: document.querySelector('#profile-runs-lost'),
+  previousBestRecord: document.querySelector('#previous-best-record'),
+  previousBestScore: document.querySelector('#previous-best-score'),
   activePlayerName: document.querySelector('#active-player-name'),
   scoreDisplay: document.querySelector('#score-display'),
   bestToBeat: document.querySelector('#best-to-beat'),
   pizzasCompleted: document.querySelector('#pizzas-completed'),
   pizzasSpoiled: document.querySelector('#pizzas-spoiled'),
   grenadesHit: document.querySelector('#grenades-hit'),
+  pizzasMissed: document.querySelector('#pizzas-missed'),
   runStatus: document.querySelector('#run-status'),
   runTimer: document.querySelector('#run-timer'),
   timerLabel: document.querySelector('#timer-label'),
@@ -34,17 +37,18 @@ const elements = {
   timerProgress: document.querySelector('#timer-progress'),
   countdownAnnouncement: document.querySelector('#countdown-announcement'),
   hazardAnnouncement: document.querySelector('#hazard-announcement'),
-  pizzaSizeDisplay: document.querySelector('#pizza-size-display'),
+  batchTitle: document.querySelector('#batch-title'),
+  batchLabel: document.querySelector('#batch-label'),
+  batchTimer: document.querySelector('#batch-timer'),
+  batchProgress: document.querySelector('#batch-progress'),
   difficultyDisplay: document.querySelector('#difficulty-display'),
-  toleranceDisplay: document.querySelector('#tolerance-display'),
   hazardStatus: document.querySelector('#hazard-status'),
   pizzaBoard: document.querySelector('#pizza-board'),
   pizzaSVG: document.querySelector('#pizza-svg'),
-  pizzaSurface: document.querySelector('#pizza-surface'),
   wholePizzaArt: document.querySelector('#whole-pizza-art'),
-  guidesLayer: document.querySelector('#guides-layer'),
-  cutsLayer: document.querySelector('#cuts-layer'),
-  grenadeLayer: document.querySelector('#grenade-layer'),
+  pizzasLayer: document.querySelector('#pizzas-layer'),
+  grenadeArtTemplate: document.querySelector('#grenade-art-template'),
+  grenadesLayer: document.querySelector('#grenades-layer'),
   bladeLayer: document.querySelector('#blade-layer'),
   bladeShadow: document.querySelector('#blade-shadow'),
   bladeLine: document.querySelector('#blade-line'),
@@ -52,11 +56,9 @@ const elements = {
   scoreFeedback: document.querySelector('#score-feedback'),
   boardOverlay: document.querySelector('#board-overlay'),
   boardOverlayText: document.querySelector('#board-overlay-text'),
-  cutsDisplay: document.querySelector('#cuts-display'),
-  cutsTarget: document.querySelector('#cuts-target'),
-  slicesDisplay: document.querySelector('#slices-display'),
-  slicesTarget: document.querySelector('#slices-target'),
+  boardSummary: document.querySelector('#board-summary'),
   keyboardControls: document.querySelector('#keyboard-controls'),
+  targetPizza: document.querySelector('#target-pizza'),
   bladeAngle: document.querySelector('#blade-angle'),
   bladeAngleValue: document.querySelector('#blade-angle-value'),
   cutAngle: document.querySelector('#cut-angle'),
@@ -72,6 +74,7 @@ const elements = {
   completePoints: document.querySelector('#complete-points'),
   wrongPenalty: document.querySelector('#wrong-penalty'),
   grenadePenalty: document.querySelector('#grenade-penalty'),
+  missedPenalty: document.querySelector('#missed-penalty'),
   timingSummary: document.querySelector('#timing-summary'),
   sizeRules: document.querySelector('#size-rules'),
   deleteDialog: document.querySelector('#delete-dialog'),
@@ -81,11 +84,11 @@ const elements = {
 };
 
 // 2. DATA: score, pizzas, difficulty, time, and verdicts come from the server.
-const recoveryKey = 'four-pizza-slice-rush.v3';
+const recoveryKey = 'four-pizza-slice-rush.v3.1';
 const svgNamespace = 'http://www.w3.org/2000/svg';
 let rules = {
-  runDurationMs: 60000, preparationMs: 3000,
-  pizzas: [{ sizeInches: 14, slices: 8 }, { sizeInches: 10, slices: 6 }, { sizeInches: 8, slices: 4 }]
+  mode: 'arcade-3.1', runDurationMs: 60000, preparationMs: 3000, waveDurationMs: 5000,
+  pizzas: [{ sizeInches: 10, slices: 4 }, { sizeInches: 12, slices: 6 }, { sizeInches: 14, slices: 8 }]
 };
 let players = [];
 let activePlayerId = null;
@@ -100,10 +103,15 @@ let requestFailure = '';
 let clockAnchor = null;
 let clockInterval = null;
 let announcedCountdown = null;
-let announcedHazard = null;
+let announcedHazards = '';
 let checkedBoundaries = new Set();
 let pointerStroke = null;
-let renderedPizza = null;
+let renderedPizzas = [];
+let renderedPizzaKey = null;
+let selectedPizzaId = null;
+let renderedTargetKey = '';
+let grenadeNodes = new Map();
+let seenEventIds = new Set();
 let renderedProfileKey = '';
 let feedbackTimer = null;
 let feedbackArtTimer = null;
@@ -148,21 +156,18 @@ function isValidPlayer(player) {
   return player && validID(player.id) && typeof player.name === 'string' &&
     player.name.trim().length > 0 && player.name.length <= 24 &&
     ['runsPlayed', 'runsWon', 'runsLost', 'bestScore', 'bestPizzaCount', 'totalPizzasCompleted']
-      .every((key) => isCount(player[key])) && player.runsPlayed === player.runsWon + player.runsLost;
+      .every((key) => isCount(player[key])) && player.runsPlayed === player.runsWon + player.runsLost &&
+    (player.previousBestScore === null || isCount(player.previousBestScore));
 }
 
 function isValidPizza(pizza) {
-  if (!pizza || !validID(pizza.id) || ![8, 10, 14].includes(pizza.pizzaSize) ||
-      pizza.requiredSlices !== ({ 8: 4, 10: 6, 14: 8 })[pizza.pizzaSize] ||
+  if (!pizza || !validID(pizza.id) || ![10, 12, 14].includes(pizza.pizzaSize) ||
+      pizza.requiredSlices !== ({ 10: 4, 12: 6, 14: 8 })[pizza.pizzaSize] ||
       pizza.requiredCuts !== pizza.requiredSlices / 2 ||
-      !Array.isArray(pizza.guideAngles) || pizza.guideAngles.length !== pizza.requiredCuts ||
-      !pizza.guideAngles.every((angle) => Number.isFinite(angle) && angle >= 0 && angle < 180) ||
-      !Array.isArray(pizza.completedCuts) ||
-      !pizza.completedCuts.every((index) => Number.isInteger(index) && index >= 0 && index < pizza.requiredCuts) ||
-      new Set(pizza.completedCuts).size !== pizza.completedCuts.length ||
-      pizza.currentSlices !== (pizza.completedCuts.length * 2 || 1) ||
-      ![1, 2, 3].includes(pizza.difficultyLevel) ||
-      !Number.isFinite(pizza.angleToleranceDeg) || pizza.angleToleranceDeg <= 0) return false;
+      ![pizza.x, pizza.y, pizza.radius].every(Number.isFinite) || pizza.radius !== 3 * pizza.pizzaSize ||
+      !Array.isArray(pizza.cutAngles) || pizza.cutAngles.length > pizza.requiredCuts ||
+      !pizza.cutAngles.every((angle) => Number.isFinite(angle) && angle >= 0 && angle < 180) ||
+      pizza.currentSlices !== (pizza.cutAngles.length * 2 || 1)) return false;
   const grenade = pizza.grenade;
   return grenade === null || Boolean(grenade &&
     [grenade.x, grenade.y, grenade.radius, grenade.appearsAt, grenade.disappearsAt].every(Number.isFinite) &&
@@ -172,27 +177,28 @@ function isValidPizza(pizza) {
 function isValidRun(value) {
   return value && validID(value.id) && validID(value.playerId) &&
     ['countdown', 'playing', 'won', 'lost'].includes(value.status) &&
-    ['score', 'pizzasCompleted', 'pizzasSpoiled', 'grenadesHit', 'bestBefore', 'targetScore']
+    ['score', 'pizzasCompleted', 'pizzasSpoiled', 'grenadesHit', 'pizzasMissed', 'bestBefore', 'targetScore', 'waveIndex']
       .every((key) => isCount(value[key])) && value.targetScore === value.bestBefore + 1 &&
-    [value.startsAt, value.endsAt, value.serverTime, value.remainingMs, value.countdownMs].every(Number.isFinite) &&
+    [value.startsAt, value.endsAt, value.serverTime, value.remainingMs, value.countdownMs, value.waveStartsAt, value.waveEndsAt].every(Number.isFinite) &&
     value.endsAt > value.startsAt && value.remainingMs >= 0 && value.countdownMs >= 0 &&
     (value.elapsedMs === null || (Number.isFinite(value.elapsedMs) && value.elapsedMs >= 0)) &&
-    value.pizzaCountsBySize && ['8', '10', '14'].every((size) => isCount(value.pizzaCountsBySize[size])) &&
-    isValidPizza(value.currentPizza) &&
-    (value.lastPizza === null || (isValidPizza(value.lastPizza) &&
-      ['completed', 'spoiled', 'grenade'].includes(value.lastPizza.outcome)));
+    value.pizzaCountsBySize && ['10', '12', '14'].every((size) => isCount(value.pizzaCountsBySize[size])) &&
+    validID(value.waveId) && value.waveEndsAt > value.waveStartsAt && [1, 2, 3].includes(value.difficultyLevel) &&
+    Array.isArray(value.pizzas) && value.pizzas.length <= 3 && value.pizzas.every(isValidPizza) &&
+    Array.isArray(value.lastEvents) && value.lastEvents.every((event) => event && validID(event.id) &&
+      ['completed', 'spoiled', 'grenade', 'missed'].includes(event.outcome) && isValidPizza(event.pizza));
 }
 
-// 3. RECOVERY: a retried cut keeps the original request ID, pizza ID, and stroke.
+// 3. RECOVERY: a retried cut keeps the original request ID, batch ID, and stroke.
 function validPoint(point) {
-  return point && Number.isFinite(point.x) && Number.isFinite(point.y) && Math.abs(point.x) <= 3 && Math.abs(point.y) <= 3;
+  return point && Number.isFinite(point.x) && Number.isFinite(point.y) && Math.abs(point.x) <= 200 && Math.abs(point.y) <= 200;
 }
 
 function validStoredAction(action) {
   if (!action || !validID(action.playerId)) return false;
   if (action.kind === 'start') return validID(action.requestId);
   if (action.kind === 'refresh') return validID(action.runId);
-  return action.kind === 'cut' && validID(action.runId) && validID(action.pizzaId) &&
+  return action.kind === 'cut' && validID(action.runId) && validID(action.waveId) &&
     validID(action.requestId) && validPoint(action.start) && validPoint(action.end);
 }
 
@@ -243,7 +249,9 @@ function clearRun() {
   pendingAction = null;
   clockAnchor = null;
   announcedCountdown = null;
-  announcedHazard = null;
+  announcedHazards = '';
+  seenEventIds = new Set();
+  selectedPizzaId = null;
   checkedBoundaries = new Set();
 }
 
@@ -290,7 +298,7 @@ function runRequest(action) {
   if (action.kind === 'cut') {
     return requestJSON(url + '/cuts', {
       method: 'POST',
-      body: { requestId: action.requestId, pizzaId: action.pizzaId, start: action.start, end: action.end }
+      body: { requestId: action.requestId, waveId: action.waveId, start: action.start, end: action.end }
     });
   }
   return requestJSON(url);
@@ -306,7 +314,9 @@ function applyEnvelope(envelope, action) {
   if (!previousRun || previousRun.id !== envelope.run.id) {
     checkedBoundaries = new Set();
     announcedCountdown = null;
-    announcedHazard = null;
+    announcedHazards = '';
+    seenEventIds = new Set();
+    selectedPizzaId = null;
     elements.bladeAngle.value = '0';
     clearFeedback();
   }
@@ -331,7 +341,7 @@ function applyEnvelope(envelope, action) {
   } else {
     if (clockInterval === null) clockInterval = setInterval(tickClock, 50);
     const feedback = typeof envelope.feedback === 'string' && envelope.feedback.trim()
-      ? envelope.feedback : (run.status === 'countdown' ? 'Study the guides while you get ready.' : 'Slice the guides and avoid active grenades.');
+      ? envelope.feedback : (run.status === 'countdown' ? 'Get ready for your first batch.' : 'Cut through the centres and make evenly sized slices.');
     setMessage(elements.gameMessage, feedback);
     setMessage(elements.playerMessage, 'Finish this run before changing your profile.');
     setConnection(run.status === 'countdown' ? 'Run ready' : 'Run in progress');
@@ -339,9 +349,9 @@ function applyEnvelope(envelope, action) {
       elements.countdownAnnouncement.textContent = 'Go! Your one-minute rush has started.';
     }
   }
-  if (previousRun?.id === run.id && run.lastPizza && run.lastPizza.id !== previousRun.lastPizza?.id) {
-    showPizzaFeedback(run.lastPizza);
-  }
+  const freshEvents = run.lastEvents.filter((event) => !seenEventIds.has(event.id));
+  run.lastEvents.forEach((event) => seenEventIds.add(event.id));
+  if (previousRun?.id === run.id && freshEvents.length > 0) showPizzaFeedback(freshEvents);
   saveRecovery();
 }
 
@@ -377,19 +387,17 @@ async function performRunAction(action) {
     renderInterface();
     if (pendingAction) elements.retryAction.focus({ preventScroll: true });
     else if (isFinished()) elements.startRun.focus({ preventScroll: true });
-    else if (action.origin === 'keyboard' && canCut()) {
-      const focusTarget = previousFocus === elements.pizzaBoard || !elements.keyboardControls.open ? elements.pizzaBoard : elements.cutAngle;
-      focusTarget.focus({ preventScroll: true });
-    }
+    else if (action.origin === 'keyboard' && run && !isFinished()) elements.pizzaBoard.focus({ preventScroll: true });
     else if (action.kind === 'start' && run) elements.pizzaBoard.focus({ preventScroll: true });
     else if (previousFocus === elements.bladeAngle && !elements.bladeAngle.disabled) elements.bladeAngle.focus({ preventScroll: true });
+    else if (previousFocus === elements.targetPizza && !elements.targetPizza.disabled) elements.targetPizza.focus({ preventScroll: true });
     else if (previousFocus === elements.cutAngle && canCut()) elements.cutAngle.focus({ preventScroll: true });
     // A request can cross a deadline. Reconcile once after it settles.
     tickClock();
   }
 }
 
-// 5. CLOCK: interpolate display time; only a server response can finish a run.
+// 5. CLOCK: interpolate both displays; only the server changes a batch/result.
 function estimatedServerTime() {
   return clockAnchor ? clockAnchor.serverTime + performance.now() - clockAnchor.receivedAt : 0;
 }
@@ -400,16 +408,28 @@ function phaseRemaining() {
   return Math.max(0, (run.status === 'countdown' ? run.startsAt : run.endsAt) - estimatedServerTime());
 }
 
+function waveRemaining() {
+  if (!run) return rules.waveDurationMs;
+  if (isFinished()) return 0;
+  if (run.status === 'countdown') return run.waveEndsAt - run.waveStartsAt;
+  return Math.max(0, Math.min(run.waveEndsAt, run.endsAt) - estimatedServerTime());
+}
+
 function boundaryKey() {
-  return run && !isFinished() && phaseRemaining() <= 0 ? run.id + ':' + run.status : null;
+  if (!run || isFinished()) return null;
+  if (run.status === 'countdown') return phaseRemaining() <= 0 ? run.id + ':preparation' : null;
+  if (phaseRemaining() <= 0) return run.id + ':end';
+  return waveRemaining() <= 0 ? run.id + ':batch:' + run.waveId : null;
 }
 
 function canCut() {
-  return Boolean(loaded && !busy && !pendingAction && run?.status === 'playing' && phaseRemaining() > 0 && !document.hidden);
+  return Boolean(loaded && !busy && !pendingAction && run?.status === 'playing' &&
+    run.pizzas.length > 0 && phaseRemaining() > 0 && waveRemaining() > 0 && !document.hidden);
 }
 
 function canAim() {
-  return Boolean(loaded && !busy && !pendingAction && run && !isFinished() && phaseRemaining() > 0);
+  return Boolean(loaded && !busy && !pendingAction && run && !isFinished() &&
+    run.pizzas.length > 0 && phaseRemaining() > 0 && waveRemaining() > 0);
 }
 
 function secondsRemaining(milliseconds) {
@@ -417,34 +437,43 @@ function secondsRemaining(milliseconds) {
   return (Math.ceil(Math.max(0, milliseconds) / 100) / 10).toFixed(1);
 }
 
-function renderHazard() {
-  const pizza = run?.currentPizza;
-  const grenade = pizza?.grenade;
+function pizzaPosition(pizza) {
+  const horizontal = pizza.x < -1 ? 'left' : (pizza.x > 1 ? 'right' : 'centre');
+  return (pizza.y < -1 ? 'upper ' : (pizza.y > 1 ? 'lower ' : '')) + horizontal;
+}
+
+function renderHazards() {
   const now = estimatedServerTime();
-  const active = Boolean(grenade && run.status === 'playing' && now >= grenade.appearsAt &&
-    now < grenade.disappearsAt && now < run.endsAt);
-  elements.grenadeLayer.setAttribute('visibility', active ? 'visible' : 'hidden');
-  elements.hazardStatus.dataset.active = String(active);
-  if (active) {
-    const angle = Math.round((Math.atan2(grenade.y, grenade.x) * 180 / Math.PI + 180) % 180);
-    setText(elements.hazardStatus, 'Grenade on ' + angle + '° · ' + secondsRemaining(grenade.disappearsAt - now) + ' s');
-    if (!announcedHazard || announcedHazard.pizzaId !== pizza.id || !announcedHazard.active) {
-      elements.hazardAnnouncement.textContent = 'Grenade on the ' + angle + ' degree guide. Cut another guide or wait until it disappears.';
+  const activePizzas = [];
+  (run?.pizzas || []).forEach((pizza) => {
+    const grenade = pizza.grenade;
+    const active = Boolean(grenade && run.status === 'playing' && now >= grenade.appearsAt &&
+      now < grenade.disappearsAt && now < run.waveEndsAt && now < run.endsAt);
+    grenadeNodes.get(pizza.id)?.setAttribute('visibility', active ? 'visible' : 'hidden');
+    if (active) activePizzas.push(pizza);
+  });
+  elements.hazardStatus.dataset.active = String(activePizzas.length > 0);
+  const hazardKey = activePizzas.map((pizza) => pizza.id).join(',');
+  if (activePizzas.length > 0) {
+    const remaining = Math.max(...activePizzas.map((pizza) => pizza.grenade.disappearsAt - now));
+    setText(elements.hazardStatus, activePizzas.length + (activePizzas.length === 1 ? ' grenade · ' : ' grenades · ') + secondsRemaining(remaining) + ' s');
+    if (hazardKey !== announcedHazards) {
+      elements.hazardAnnouncement.textContent = 'Active grenade on ' + activePizzas.map((pizza) =>
+        'the ' + pizza.pizzaSize + '-inch ' + pizzaPosition(pizza) + ' pizza').join(' and ') + '. Avoid it until it disappears.';
     }
   } else {
     setText(elements.hazardStatus, !run || isFinished() ? 'Watch for grenades during your run' :
       (run.status === 'countdown' ? 'Grenades may appear when play starts' : 'No active grenade'));
-    if (pizza && announcedHazard?.pizzaId === pizza.id && announcedHazard.active && !isFinished()) {
-      elements.hazardAnnouncement.textContent = 'The grenade has cleared.';
-    }
+    if (announcedHazards && run?.status === 'playing') elements.hazardAnnouncement.textContent = 'No active grenades remain.';
   }
-  announcedHazard = { pizzaId: pizza?.id || null, active: active };
+  announcedHazards = hazardKey;
 }
 
 function renderClock() {
   const remaining = phaseRemaining();
   const countdown = run?.status === 'countdown';
   const key = boundaryKey();
+  const finalBoundary = Boolean(run && !countdown && remaining <= 0 && !isFinished());
   setText(elements.timerLabel, countdown ? 'Get ready' : 'Time left');
   setText(elements.timerDisplay, countdown ? Math.ceil(remaining / 1000) : secondsRemaining(remaining));
   elements.timerProgress.max = countdown ? Math.max(1, run.countdownMs)
@@ -456,19 +485,28 @@ function renderClock() {
   elements.runStatus.dataset.state = run?.status || 'ready';
   elements.pizzaBoard.dataset.state = run?.status || 'ready';
 
+  const batchTime = countdown ? remaining : waveRemaining();
+  setText(elements.batchLabel, countdown ? 'First batch in' : (run && !isFinished() && run.pizzas.length === 0 ? 'Next batch in' : 'Batch ends in'));
+  setText(elements.batchTimer, secondsRemaining(batchTime));
+  elements.batchProgress.max = countdown ? Math.max(1, run.countdownMs)
+    : Math.max(1, run ? run.waveEndsAt - run.waveStartsAt : rules.waveDurationMs);
+  elements.batchProgress.value = batchTime;
+  elements.batchProgress.setAttribute('aria-valuetext', secondsRemaining(batchTime) + ' seconds until the batch changes');
+
   let overlay = '';
   if (!loaded) overlay = requestFailure ? 'Reload & recover to reconnect.' : 'Getting the arcade ready…';
   else if (pendingAction && requestFailure) overlay = 'Waiting for confirmation · use Retry';
   else if (!run) overlay = busy ? 'Preparing your run…' : (getActivePlayer() ? 'Ready? Start your one-minute rush.' : 'Create a profile below to get started.');
   else if (isFinished()) overlay = run.status === 'won' ? 'New personal best!' : 'Minute complete · try again';
   else if (countdown && remaining > 0) overlay = 'Ready in ' + Math.ceil(remaining / 1000);
-  else if (key) overlay = countdown ? 'Starting the run…' : 'Checking final result…';
+  else if (key) overlay = countdown ? 'Starting the run…' : (finalBoundary ? 'Checking final result…' : 'Checking the next batch…');
+  else if (run.pizzas.length === 0) overlay = 'Board clear · next batch in ' + secondsRemaining(waveRemaining()) + ' s';
   else if (busy) overlay = 'Checking your cut…';
   elements.boardOverlay.hidden = !overlay;
   setText(elements.boardOverlayText, overlay);
   setText(elements.runStatus, !loaded ? 'Getting ready' : (!run ? (busy ? 'Preparing run' : 'Ready when you are') :
     (isFinished() ? (run.status === 'won' ? 'Win · new best' : 'Loss · best stands') :
-      (key ? (countdown ? 'Starting…' : 'Checking result') : (countdown ? 'Get ready' : 'Keep slicing')))));
+      (key ? (finalBoundary ? 'Checking result' : 'Checking batch') : (countdown ? 'Get ready' : 'Keep slicing')))));
 
   if (countdown) {
     const seconds = Math.ceil(remaining / 1000);
@@ -481,24 +519,25 @@ function renderClock() {
   elements.pizzaBoard.setAttribute('aria-disabled', String(!interactive));
   elements.cutAngle.disabled = !interactive;
   elements.bladeAngle.disabled = !canAim();
+  elements.targetPizza.disabled = !canAim();
   elements.checkRun.hidden = !run || isFinished() || Boolean(pendingAction) ||
     (!requestFailure && !(key && checkedBoundaries.has(key)));
   elements.checkRun.disabled = busy;
   if (!interactive && pointerStroke) cancelPointerStroke();
   if (!canAim()) elements.bladeLayer.setAttribute('visibility', 'hidden');
-  renderHazard();
+  renderHazards();
 }
 
 function tickClock() {
   renderClock();
   const key = boundaryKey();
   if (!key || busy || pendingAction || checkedBoundaries.has(key)) return;
-  // One automatic GET per phase, never 50ms polling. Failures expose Retry.
+  // One automatic GET per preparation, batch, or run deadline; no timer polling.
   checkedBoundaries.add(key);
   void performRunAction({ kind: 'refresh', playerId: run.playerId, runId: run.id, origin: 'phase' });
 }
 
-// 6. RENDER: safe profile text, real SVG guides, and server-confirmed cut lines.
+// 6. RENDER: safe profile text, several SVG pizzas, and confirmed cut lines.
 function sortProfilesByName(profileList) {
   return [...profileList].sort((first, second) => first.name.localeCompare(second.name) || first.id.localeCompare(second.id));
 }
@@ -533,6 +572,8 @@ function renderProfiles(profileList) {
   setText(elements.profileTotalPizzas, player?.totalPizzasCompleted || 0);
   setText(elements.profileRunsWon, player?.runsWon || 0);
   setText(elements.profileRunsLost, player?.runsLost || 0);
+  elements.previousBestRecord.hidden = !player || player.previousBestScore === null;
+  setText(elements.previousBestScore, player?.previousBestScore || 0);
   elements.playerName.disabled = locked;
   elements.playerSubmit.disabled = locked;
   elements.cancelEdit.disabled = locked;
@@ -550,7 +591,7 @@ function svgElement(name, attributes = {}) {
   return node;
 }
 
-function makeGuideLine(angle, className) {
+function makeCutLine(angle, className) {
   const stroke = strokeForAngle(angle, 1);
   return svgElement('line', {
     x1: stroke.start.x * 100, y1: stroke.start.y * 100,
@@ -558,55 +599,95 @@ function makeGuideLine(angle, className) {
   });
 }
 
-function renderPizza() {
-  const pizza = run?.currentPizza;
-  const signature = pizza ? pizza.id + ':' + pizza.completedCuts.join(',') : '';
-  if (renderedPizza?.signature === signature) return;
-  const previousCuts = pizza && renderedPizza?.id === pizza.id ? renderedPizza.cuts : [];
-  elements.guidesLayer.replaceChildren();
-  elements.cutsLayer.replaceChildren();
-  elements.pizzaSurface.setAttribute('transform', 'scale(' + (pizza ? pizza.pizzaSize / 14 : 1) + ')');
-  if (pizza) {
-    pizza.guideAngles.forEach((angle, index) => {
-      const completed = pizza.completedCuts.includes(index);
-      const layer = completed ? elements.cutsLayer : elements.guidesLayer;
-      layer.append(makeGuideLine(angle, completed ? 'pizza-cut-shadow' : 'pizza-guide-shadow'));
-      const fresh = completed && !previousCuts.includes(index) && renderedPizza?.id === pizza.id;
-      layer.append(makeGuideLine(angle, completed ? 'pizza-cut' + (fresh ? ' is-fresh' : '') : 'pizza-guide'));
+function renderTargets(pizzas) {
+  if (!pizzas.some((pizza) => pizza.id === selectedPizzaId)) selectedPizzaId = pizzas[0]?.id || null;
+  const key = pizzas.map((pizza) => pizza.id).join(',');
+  if (key !== renderedTargetKey) {
+    const options = pizzas.map((pizza) => {
+      const option = document.createElement('option');
+      option.value = pizza.id;
+      option.textContent = pizza.pizzaSize + '″ · ' + pizzaPosition(pizza) + ' · ' + pizza.requiredSlices + ' slices';
+      return option;
     });
-    if (pizza.grenade) {
-      elements.grenadeLayer.setAttribute('transform', 'translate(' + pizza.grenade.x * 100 + ' ' + pizza.grenade.y * 100 + ') scale(' + pizza.grenade.radius / 0.19 + ')');
+    if (options.length === 0) {
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = 'No pizza on the board';
+      options.push(empty);
     }
-    elements.pizzaBoard.setAttribute('aria-label', pizza.pizzaSize + '-inch pizza. ' + pizza.requiredSlices +
-      ' slices needed. ' + pizza.completedCuts.length + ' of ' + pizza.requiredCuts + ' cuts complete. Guide angles: ' +
-      pizza.guideAngles.map((angle, index) => angle + ' degrees' + (pizza.completedCuts.includes(index) ? ' complete' : '')).join(', ') + '.');
-  } else {
-    elements.pizzaBoard.setAttribute('aria-label', 'Whole pizza slicing board. Create or choose a profile, then start a run.');
+    elements.targetPizza.replaceChildren(...options);
+    renderedTargetKey = key;
   }
-  setText(elements.pizzaSizeDisplay, pizza ? pizza.pizzaSize + '″ pizza · ' + pizza.requiredSlices + ' slices' : 'A fresh pizza is waiting');
-  setText(elements.difficultyDisplay, pizza ? 'Pizza level ' + pizza.difficultyLevel : 'Pizza level —');
-  elements.difficultyDisplay.dataset.level = pizza ? String(pizza.difficultyLevel) : '';
-  setText(elements.toleranceDisplay, pizza ? 'Aim within ±' + pizza.angleToleranceDeg + '°' : 'Follow the dashed guides');
-  setText(elements.cutsDisplay, pizza?.completedCuts.length || 0);
-  setText(elements.cutsTarget, pizza?.requiredCuts || '—');
-  setText(elements.slicesDisplay, pizza?.currentSlices || 1);
-  setText(elements.slicesTarget, pizza?.requiredSlices || '—');
-  renderedPizza = { id: pizza?.id || null, signature: signature, cuts: pizza ? [...pizza.completedCuts] : [] };
+  elements.targetPizza.value = selectedPizzaId || '';
+}
+
+function renderPizzas() {
+  const pizzas = run?.pizzas || [];
+  const signature = JSON.stringify([run?.id, run?.waveId, run?.status, pizzas.map((pizza) => [pizza.id, pizza.cutAngles])]);
+  if (renderedPizzaKey === signature) return;
+  elements.pizzasLayer.replaceChildren();
+  elements.grenadesLayer.replaceChildren();
+  grenadeNodes = new Map();
+  pizzas.forEach((pizza) => {
+    const previous = renderedPizzas.find((item) => item.id === pizza.id);
+    const group = svgElement('g', { transform: 'translate(' + pizza.x + ' ' + pizza.y + ') scale(' + pizza.radius / 100 + ')' });
+    group.append(copyPizzaArt());
+    // Only angles already accepted by the API are drawn on the pizza.
+    pizza.cutAngles.forEach((angle) => {
+      const fresh = previous && !previous.cutAngles.includes(angle);
+      group.append(makeCutLine(angle, 'pizza-cut-shadow'));
+      group.append(makeCutLine(angle, 'pizza-cut' + (fresh ? ' is-fresh' : '')));
+    });
+    elements.pizzasLayer.append(group);
+    const label = svgElement('text', { x: pizza.x, y: pizza.y + pizza.radius + 14, 'text-anchor': 'middle', class: 'pizza-size-label' });
+    label.textContent = pizza.pizzaSize + '″ · ' + pizza.requiredSlices + ' slices';
+    const progress = svgElement('text', { x: pizza.x, y: pizza.y + pizza.radius + 25, 'text-anchor': 'middle', class: 'pizza-progress-label' });
+    progress.textContent = pizza.cutAngles.length + '/' + pizza.requiredCuts + ' cuts · ' + pizza.currentSlices + '/' + pizza.requiredSlices + ' slices';
+    elements.pizzasLayer.append(label, progress);
+    if (pizza.grenade) {
+      const grenade = pizza.grenade;
+      const sprite = elements.grenadeArtTemplate.cloneNode(true);
+      sprite.removeAttribute('id');
+      sprite.setAttribute('class', 'grenade-sprite');
+      sprite.setAttribute('transform', 'translate(' + grenade.x + ' ' + grenade.y + ') scale(' + grenade.radius / 20 + ')');
+      sprite.setAttribute('visibility', 'hidden');
+      elements.grenadesLayer.append(sprite);
+      grenadeNodes.set(pizza.id, sprite);
+    }
+  });
+  const quantity = run ? DIFFICULTY_LEVELS.find((level) => level.level === run.difficultyLevel).pizzasPerWave : 0;
+  setText(elements.batchTitle, run ? 'Batch ' + (run.waveIndex + 1) + ' of 12' : 'Fresh pizzas every ' + rules.waveDurationMs / 1000 + ' seconds');
+  setText(elements.difficultyDisplay, run ? 'Level ' + run.difficultyLevel + ' · ' + quantity + (quantity === 1 ? ' pizza' : ' pizzas') : 'Level —');
+  elements.difficultyDisplay.dataset.level = run ? String(run.difficultyLevel) : '';
+  setText(elements.boardSummary, !run ? 'Your first batch is waiting' : (isFinished() ? 'Run complete' :
+    (pizzas.length ? pizzas.length + (pizzas.length === 1 ? ' pizza remaining' : ' pizzas remaining') : 'Batch cleared')));
+  elements.pizzaBoard.setAttribute('aria-label', pizzas.length ? pizzas.map((pizza) =>
+    pizza.pizzaSize + '-inch pizza, ' + pizzaPosition(pizza) + '. ' + pizza.requiredSlices + ' slices needed; ' +
+    pizza.cutAngles.length + ' of ' + pizza.requiredCuts + ' cuts made.' +
+    (pizza.cutAngles.length ? ' Cuts made at ' + pizza.cutAngles.map((angle) => Math.round(angle) + ' degrees').join(', ') + '.' : ' Your first cut sets the direction.')
+  ).join(' ') : 'Pizza board. ' + (run && !isFinished() ? 'Wait for the next batch.' : 'Create or choose a profile, then start a run.'));
+  renderTargets(pizzas);
+  renderedPizzas = [...pizzas];
+  renderedPizzaKey = signature;
 }
 
 function renderRules() {
   setText(elements.completePoints, '+' + SCORE_RULES.completedPizza);
   setText(elements.wrongPenalty, '−' + SCORE_RULES.wrongCut);
   setText(elements.grenadePenalty, '−' + SCORE_RULES.grenade);
+  setText(elements.missedPenalty, '−' + SCORE_RULES.missedPizza);
   const preparation = rules.preparationMs > 0 ? rules.preparationMs / 1000 + ' seconds to prepare, then ' : 'Start straight into ';
-  const levels = DIFFICULTY_LEVELS.slice(1).map((level) => level.startsAfterMs / 1000).join(' and ');
-  setText(elements.timingSummary, preparation + 'a full ' + rules.runDurationMs / 1000 + ' seconds. Difficulty rises for new pizzas after ' + levels + ' seconds.');
+  const levels = DIFFICULTY_LEVELS.map((level, index) => level.pizzasPerWave + (level.pizzasPerWave === 1 ? ' pizza' : ' pizzas') +
+    (index === 0 ? ' at first' : ' after ' + level.startsAfterMs / 1000 + ' seconds')).join(', ');
+  setText(elements.timingSummary, preparation + 'a full ' + rules.runDurationMs / 1000 + ' seconds. Fresh batches every ' + rules.waveDurationMs / 1000 + ' seconds: ' + levels + '.');
   elements.sizeRules.replaceChildren(...rules.pizzas.map((pizza) => {
     const item = document.createElement('li');
     const size = document.createElement('strong');
     size.textContent = pizza.sizeInches + '″';
     const slices = document.createElement('span');
-    slices.textContent = pizza.slices + ' slices · ' + pizza.slices / 2 + ' cuts';
+    const cuts = pizza.slices / 2;
+    const name = ({ 10: 'Small', 12: 'Medium', 14: 'Large' })[pizza.sizeInches];
+    slices.textContent = name + ' · ' + pizza.slices + ' slices · ' + cuts + ' cuts, ' + 180 / cuts + '° apart';
     item.append(size, slices);
     return item;
   }));
@@ -622,6 +703,7 @@ function renderInterface() {
   setText(elements.pizzasCompleted, run?.pizzasCompleted || 0);
   setText(elements.pizzasSpoiled, run?.pizzasSpoiled || 0);
   setText(elements.grenadesHit, run?.grenadesHit || 0);
+  setText(elements.pizzasMissed, run?.pizzasMissed || 0);
   elements.startRun.disabled = !loaded || busy || !player || isRunLocked() || Boolean(editingPlayerId);
   setText(elements.startRun, isFinished() ? 'Play another minute' : 'Start run');
   elements.createProfileShortcut.hidden = Boolean(player);
@@ -639,93 +721,107 @@ function renderInterface() {
       (run.status === 'won' ? 'You beat your starting best of ' + run.bestBefore + '.' :
         'Beat your starting best of ' + run.bestBefore + ' to win. Ties count as a loss.'));
   }
-  renderPizza();
+  renderPizzas();
   renderClock();
   renderBlade();
 }
 
-// 7. FEEDBACK: animate only the completed/spoiled pizza confirmed by the API.
+// 7. FEEDBACK: event IDs prevent replays when the API returns the same history.
 function copyPizzaArt() {
   const art = elements.wholePizzaArt.cloneNode(true);
   art.removeAttribute('id');
   return art;
 }
 
-function showPizzaFeedback(pizza) {
+function showPizzaFeedback(events) {
   clearFeedback();
-  const label = pizza.outcome === 'completed' ? '+' + SCORE_RULES.completedPizza + ' · pizza complete' :
-    (pizza.outcome === 'grenade' ? '−' + SCORE_RULES.grenade + ' · grenade' : '−' + SCORE_RULES.wrongCut + ' · wrong cut');
+  const counts = { completed: 0, spoiled: 0, grenade: 0, missed: 0 };
+  events.forEach((event) => { counts[event.outcome] += 1; });
+  const labels = [];
+  if (counts.completed) labels.push('+' + counts.completed * SCORE_RULES.completedPizza + ' · ' + counts.completed + ' complete');
+  if (counts.spoiled) labels.push('−' + counts.spoiled * SCORE_RULES.wrongCut + ' · ' + counts.spoiled + ' wrong cut');
+  if (counts.grenade) labels.push('−' + counts.grenade * SCORE_RULES.grenade + ' · ' + counts.grenade + ' grenade');
+  if (counts.missed) labels.push('−' + counts.missed * SCORE_RULES.missedPizza + ' · ' + counts.missed + ' missed');
+  const label = labels.join(' / ');
   elements.scoreFeedback.textContent = label;
-  elements.scoreFeedback.dataset.outcome = pizza.outcome;
+  elements.scoreFeedback.dataset.outcome = counts.grenade ? 'grenade' : (counts.spoiled ? 'spoiled' : (counts.missed ? 'missed' : 'completed'));
   elements.scoreFeedback.classList.add('is-visible');
   feedbackTimer = setTimeout(() => elements.scoreFeedback.classList.remove('is-visible'), 800);
   if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  const wrapper = svgElement('g', { transform: 'scale(' + pizza.pizzaSize / 14 + ')' });
-  elements.pizzaFeedbackLayer.append(wrapper);
-  if (pizza.outcome === 'completed') {
-    const angles = pizza.guideAngles.flatMap((angle) => [angle, angle + 180]).sort((a, b) => a - b);
-    const definitions = svgElement('defs');
-    wrapper.append(definitions);
-    feedbackSequence += 1;
-    angles.forEach((start, index) => {
-      const end = angles[(index + 1) % angles.length] + (index === angles.length - 1 ? 360 : 0);
-      const first = { x: Math.cos(start * Math.PI / 180) * 112, y: Math.sin(start * Math.PI / 180) * 112 };
-      const last = { x: Math.cos(end * Math.PI / 180) * 112, y: Math.sin(end * Math.PI / 180) * 112 };
-      const clipID = 'rush-slice-' + feedbackSequence + '-' + index;
-      const clip = svgElement('clipPath', { id: clipID });
-      clip.append(svgElement('path', { d: 'M 0 0 L ' + first.x + ' ' + first.y + ' A 112 112 0 0 1 ' + last.x + ' ' + last.y + ' Z' }));
-      definitions.append(clip);
-      const slice = svgElement('g', { class: 'feedback-slice' });
-      const middle = (start + end) / 2 * Math.PI / 180;
-      slice.style.setProperty('--slice-x', Math.cos(middle) * 18 + 'px');
-      slice.style.setProperty('--slice-y', Math.sin(middle) * 18 + 'px');
-      const clippedArt = svgElement('g', { 'clip-path': 'url(#' + clipID + ')' });
-      clippedArt.append(copyPizzaArt());
-      slice.append(clippedArt);
-      wrapper.append(slice);
-    });
-  } else {
-    const art = copyPizzaArt();
-    art.setAttribute('class', 'feedback-' + pizza.outcome);
-    wrapper.append(art);
-    if (pizza.outcome === 'grenade' && pizza.grenade) {
-      art.append(svgElement('circle', { cx: pizza.grenade.x * 100, cy: pizza.grenade.y * 100, r: 30,
-        fill: '#ffc95d', 'fill-opacity': 0.7, stroke: '#b53c29', 'stroke-width': 4 }));
+  // A late refresh can report many missed batches; keep the visual effect brief.
+  events.slice(-3).forEach(({ pizza, outcome }) => {
+    const wrapper = svgElement('g', { transform: 'translate(' + pizza.x + ' ' + pizza.y + ') scale(' + pizza.radius / 100 + ')' });
+    elements.pizzaFeedbackLayer.append(wrapper);
+    if (outcome === 'completed') {
+      const angles = pizza.cutAngles.flatMap((angle) => [angle, angle + 180]).sort((a, b) => a - b);
+      const definitions = svgElement('defs');
+      wrapper.append(definitions);
+      feedbackSequence += 1;
+      angles.forEach((start, index) => {
+        const end = angles[(index + 1) % angles.length] + (index === angles.length - 1 ? 360 : 0);
+        const first = { x: Math.cos(start * Math.PI / 180) * 112, y: Math.sin(start * Math.PI / 180) * 112 };
+        const last = { x: Math.cos(end * Math.PI / 180) * 112, y: Math.sin(end * Math.PI / 180) * 112 };
+        const clipID = 'rush-slice-' + feedbackSequence + '-' + index;
+        const clip = svgElement('clipPath', { id: clipID });
+        clip.append(svgElement('path', { d: 'M 0 0 L ' + first.x + ' ' + first.y + ' A 112 112 0 0 1 ' + last.x + ' ' + last.y + ' Z' }));
+        definitions.append(clip);
+        const slice = svgElement('g', { class: 'feedback-slice' });
+        const middle = (start + end) / 2 * Math.PI / 180;
+        slice.style.setProperty('--slice-x', Math.cos(middle) * 18 + 'px');
+        slice.style.setProperty('--slice-y', Math.sin(middle) * 18 + 'px');
+        const clippedArt = svgElement('g', { 'clip-path': 'url(#' + clipID + ')' });
+        clippedArt.append(copyPizzaArt());
+        slice.append(clippedArt);
+        wrapper.append(slice);
+      });
+    } else {
+      const art = copyPizzaArt();
+      art.setAttribute('class', 'feedback-' + outcome);
+      wrapper.append(art);
+      if (outcome === 'grenade' && pizza.grenade) {
+        art.append(svgElement('circle', { cx: (pizza.grenade.x - pizza.x) * 100 / pizza.radius,
+          cy: (pizza.grenade.y - pizza.y) * 100 / pizza.radius, r: 30,
+          fill: '#ffc95d', 'fill-opacity': 0.7, stroke: '#b53c29', 'stroke-width': 4 }));
+      }
     }
-  }
+  });
   feedbackArtTimer = setTimeout(() => elements.pizzaFeedbackLayer.replaceChildren(), 300);
 }
 
-// 8. INPUT: every gesture keeps the pizza ID it began on.
+// 8. INPUT: world-coordinate strokes keep the batch ID they began on.
 function paintBlade(stroke) {
   [elements.bladeShadow, elements.bladeLine].forEach((line) => {
-    line.setAttribute('x1', stroke.start.x * 100);
-    line.setAttribute('y1', stroke.start.y * 100);
-    line.setAttribute('x2', stroke.end.x * 100);
-    line.setAttribute('y2', stroke.end.y * 100);
+    line.setAttribute('x1', stroke.start.x);
+    line.setAttribute('y1', stroke.start.y);
+    line.setAttribute('x2', stroke.end.x);
+    line.setAttribute('y2', stroke.end.y);
   });
   elements.bladeLayer.setAttribute('visibility', 'visible');
+}
+
+function getTargetPizza() {
+  return run?.pizzas.find((pizza) => pizza.id === selectedPizzaId);
 }
 
 function renderBlade() {
   setText(elements.bladeAngleValue, elements.bladeAngle.value + '°');
   elements.bladeAngle.setAttribute('aria-valuetext', elements.bladeAngle.value + ' degrees');
+  const pizza = getTargetPizza();
   if (pointerStroke) paintBlade(pointerStroke);
-  else if (elements.keyboardControls.open && canAim()) paintBlade(strokeForAngle(Number(elements.bladeAngle.value), 1.08));
+  else if (elements.keyboardControls.open && canAim() && pizza) paintBlade(strokeForPizza(pizza, Number(elements.bladeAngle.value)));
   else elements.bladeLayer.setAttribute('visibility', 'hidden');
 }
 
 function pointerPoint(event) {
   const matrix = elements.pizzaSVG.getScreenCTM();
-  if (!matrix || !run?.currentPizza) return null;
+  if (!matrix || !run) return null;
   const point = elements.pizzaSVG.createSVGPoint();
   point.x = event.clientX;
   point.y = event.clientY;
-  // Inverse screen transform handles responsive SVG size and page scrolling.
+  // Inverse root-SVG transform gives shared world coordinates for any pizza size.
   const local = point.matrixTransform(matrix.inverse());
-  const radius = 100 * run.currentPizza.pizzaSize / 14;
-  const normalise = (value) => Math.round(Math.max(-3, Math.min(3, value / radius)) * 1000000) / 1000000;
-  return { x: normalise(local.x), y: normalise(local.y) };
+  const limit = (value) => Math.round(Math.max(-200, Math.min(200, value)) * 1000000) / 1000000;
+  return { x: limit(local.x), y: limit(local.y) };
 }
 
 function cancelPointerStroke() {
@@ -741,14 +837,14 @@ function handlePointerDown(event) {
   if (!point) return;
   event.preventDefault();
   elements.pizzaBoard.focus({ preventScroll: true });
-  pointerStroke = { pointerId: event.pointerId, pizzaId: run.currentPizza.id, start: point, end: point };
+  pointerStroke = { pointerId: event.pointerId, waveId: run.waveId, start: point, end: point };
   elements.pizzaBoard.setPointerCapture(event.pointerId);
   paintBlade(pointerStroke);
 }
 
 function handlePointerMove(event) {
   if (!pointerStroke || pointerStroke.pointerId !== event.pointerId) return;
-  if (!canCut() || pointerStroke.pizzaId !== run?.currentPizza.id) { cancelPointerStroke(); tickClock(); return; }
+  if (!canCut() || pointerStroke.waveId !== run?.waveId) { cancelPointerStroke(); tickClock(); return; }
   const point = pointerPoint(event);
   if (!point) return;
   event.preventDefault();
@@ -761,21 +857,22 @@ function handlePointerUp(event) {
   const stroke = pointerStroke;
   const point = pointerPoint(event);
   cancelPointerStroke();
-  if (!point || !canCut() || stroke.pizzaId !== run?.currentPizza.id) { tickClock(); return; }
+  if (!point || !canCut() || stroke.waveId !== run?.waveId) { tickClock(); return; }
   event.preventDefault();
-  void submitCut({ start: stroke.start, end: point }, stroke.pizzaId, 'pointer');
+  void submitCut({ start: stroke.start, end: point }, stroke.waveId, 'pointer');
 }
 
-async function submitCut(stroke, pizzaId, origin) {
-  if (!canCut() || pizzaId !== run.currentPizza.id) { tickClock(); return; }
-  await performRunAction({ kind: 'cut', playerId: run.playerId, runId: run.id, pizzaId: pizzaId,
+async function submitCut(stroke, waveId, origin) {
+  if (!canCut() || waveId !== run.waveId) { tickClock(); return; }
+  await performRunAction({ kind: 'cut', playerId: run.playerId, runId: run.id, waveId: waveId,
     requestId: crypto.randomUUID(), start: stroke.start, end: stroke.end, origin: origin });
 }
 
 function submitKeyboardCut() {
-  if (!canCut()) { tickClock(); return; }
-  // The player chooses this angle; no button automatically selects a guide.
-  void submitCut(strokeForAngle(Number(elements.bladeAngle.value), 1.08), run.currentPizza.id, 'keyboard');
+  const pizza = getTargetPizza();
+  if (!canCut() || !pizza) { tickClock(); return; }
+  // The selected pizza sets position; the player's chosen angle stays unchanged.
+  void submitCut(strokeForPizza(pizza, Number(elements.bladeAngle.value)), run.waveId, 'keyboard');
 }
 
 function handleBoardKey(event) {
@@ -786,9 +883,7 @@ function handleBoardKey(event) {
     elements.keyboardControls.open = true;
     elements.bladeAngle.value = String((Number(elements.bladeAngle.value) + (event.key === 'ArrowRight' ? 5 : 175)) % 180);
     renderBlade();
-  } else if (event.key === 'Enter' || event.key === ' ') {
-    submitKeyboardCut();
-  }
+  } else if (event.key === 'Enter' || event.key === ' ') submitKeyboardCut();
 }
 
 function startRun() {
@@ -836,7 +931,7 @@ async function handlePlayerSubmit(event) {
     resetEditor();
     elements.profileEditor.open = false;
     setMessage(elements.playerMessage, wasEditing ? 'Profile name updated.' : player.name + ' is ready to play.', 'success');
-    if (!wasEditing) setMessage(elements.gameMessage, 'Press Start run to reveal your first pizza. Your score begins at zero.');
+    if (!wasEditing) setMessage(elements.gameMessage, 'Press Start run to reveal your first batch. Your score begins at zero.');
     setConnection('Profile saved');
     saveRecovery();
   } catch (error) {
@@ -934,6 +1029,11 @@ elements.pizzaBoard.addEventListener('pointerup', handlePointerUp);
 elements.pizzaBoard.addEventListener('pointercancel', cancelPointerStroke);
 elements.pizzaBoard.addEventListener('lostpointercapture', () => { if (pointerStroke) cancelPointerStroke(); });
 elements.pizzaBoard.addEventListener('keydown', handleBoardKey);
+elements.targetPizza.addEventListener('change', () => {
+  if (!canAim()) return;
+  selectedPizzaId = elements.targetPizza.value;
+  renderBlade();
+});
 elements.bladeAngle.addEventListener('input', renderBlade);
 elements.keyboardControls.addEventListener('toggle', renderBlade);
 elements.cutAngle.addEventListener('click', submitKeyboardCut);

@@ -10,11 +10,16 @@ import { createAppServer } from '../server.js';
 async function setup(t, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'pizza-rush-test-'));
   const publicDir = join(directory, 'public');
-  const dataFile = join(directory, '.data', 'rush.json');
+  const dataFile = join(directory, '.data', 'rush-3.1.json');
+  const legacyDataFile = join(directory, '.data', 'rush.json');
   await mkdir(publicDir);
   await writeFile(join(publicDir, 'index.html'), '<!doctype html><h1>Rush test</h1>');
   const rules = { ...JSON.parse(await readFile(new URL('../game-rules.json', import.meta.url), 'utf8')), ...options.rules };
   await writeFile(join(publicDir, 'game-rules.json'), JSON.stringify(rules));
+  if (options.legacy !== undefined || options.legacyText !== undefined) {
+    await mkdir(dirname(dataFile), { recursive: true });
+    await writeFile(legacyDataFile, options.legacyText ?? JSON.stringify(options.legacy));
+  }
   let now = 1_000_000;
   let nextClockHook = null;
   let randomSequence = options.randomSequence || [0];
@@ -56,7 +61,7 @@ async function setup(t, options = {}) {
     return { server, base, request };
   }
   return {
-    directory, publicDir, dataFile, rules, start,
+    directory, publicDir, dataFile, legacyDataFile, rules, start,
     setTime(value) { now = value; },
     onNextClock(hook) { nextClockHook = hook; },
     setRandom(sequence) { randomSequence = sequence; randomIndex = 0; },
@@ -69,21 +74,26 @@ function close(server) {
   return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
-function stroke(angle, radius = 1.05) {
+function stroke(pizza, angle = 0) {
   const radians = angle * Math.PI / 180;
-  const x = Math.cos(radians) * radius;
-  const y = Math.sin(radians) * radius;
-  return { start: { x: -x, y: -y }, end: { x, y } };
+  const dx = Math.cos(radians) * pizza.radius * 1.05;
+  const dy = Math.sin(radians) * pizza.radius * 1.05;
+  return { start: { x: pizza.x - dx, y: pizza.y - dy }, end: { x: pizza.x + dx, y: pizza.y + dy } };
 }
 
-function grenadeStroke(grenade, halfLength = 0.1) {
-  return {
-    start: { x: grenade.x - halfLength, y: grenade.y },
-    end: { x: grenade.x + halfLength, y: grenade.y }
-  };
+function unevenStroke(pizza) {
+  return { start: { x: pizza.x - pizza.radius * 1.05, y: pizza.y + pizza.radius * 0.3 },
+    end: { x: pizza.x + pizza.radius * 1.05, y: pizza.y + pizza.radius * 0.3 } };
 }
 
-const unevenStroke = { start: { x: -1, y: 0.3 }, end: { x: 1, y: 0.3 } };
+function grenadeStroke(grenade, halfLength = 2) {
+  return { start: { x: grenade.x - halfLength, y: grenade.y }, end: { x: grenade.x + halfLength, y: grenade.y } };
+}
+
+function legacyProfile(id = 'old-player', name = 'Adzan', bestScore = 80) {
+  return { id, name, runsPlayed: 3, runsWon: 1, runsLost: 2,
+    bestScore, bestPizzaCount: 8, totalPizzasCompleted: 10 };
+}
 
 async function addPlayer(fixture, name = 'Adzan') {
   const response = await fixture.request('/api/players', 'POST', { name });
@@ -97,24 +107,37 @@ async function newRun(fixture, playerId, requestId) {
   return response.body.run;
 }
 
-async function cut(fixture, run, requestId, coordinates, pizzaId = run.currentPizza.id) {
-  return fixture.request(`/api/runs/${run.id}/cuts`, 'POST', { requestId, pizzaId, ...coordinates });
+async function cut(fixture, run, requestId, coordinates, waveId = run.waveId) {
+  return fixture.request(`/api/runs/${run.id}/cuts`, 'POST', { requestId, waveId, ...coordinates });
 }
 
-async function completePizza(fixture, run, elapsedMs, prefix = run.currentPizza.id) {
-  fixture.setTime(run.startsAt + elapsedMs);
-  const pizza = run.currentPizza;
+async function atWave(fixture, run, index) {
+  fixture.setTime(run.startsAt + index * 5000);
+  const response = await fixture.request(`/api/runs/${run.id}`);
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  return response.body.run;
+}
+
+async function completePizza(fixture, run, pizza = run.pizzas[0], angle = 23) {
+  const anchor = pizza.cutAngles[0] ?? angle;
   let response;
   for (let index = 0; index < pizza.requiredCuts; index += 1) {
-    if (pizza.completedCuts.includes(index)) continue;
-    response = await cut(fixture, run, `${prefix}-cut-${index}`, stroke(pizza.guideAngles[index]));
+    const desired = (anchor + index * 180 / pizza.requiredCuts) % 180;
+    if (pizza.cutAngles.some((made) => Math.abs(made - desired) < 1e-7)) continue;
+    response = await cut(fixture, run, `${pizza.id}-cut-${index}`, stroke(pizza, desired));
     assert.equal(response.status, 200, JSON.stringify(response.body));
   }
   assert.equal(response.body.run.status, 'playing');
   assert.equal(response.body.run.pizzasCompleted, run.pizzasCompleted + 1);
-  assert.equal(response.body.run.lastPizza.id, pizza.id);
-  assert.equal(response.body.run.lastPizza.outcome, 'completed');
-  return response.body;
+  assert.ok(!response.body.run.pizzas.some((remaining) => remaining.id === pizza.id));
+  assert.ok(response.body.run.lastEvents.some((event) => event.outcome === 'completed' && event.pizza.id === pizza.id));
+  return response.body.run;
+}
+
+async function clearWave(fixture, run) {
+  fixture.setTime(run.waveStartsAt + 2000);
+  while (run.pizzas.length) run = await completePizza(fixture, run);
+  return run;
 }
 
 async function finishRun(fixture, run) {
@@ -125,461 +148,330 @@ async function finishRun(fixture, run) {
 }
 
 function assertPublicPlayer(player) {
-  assert.deepEqual(Object.keys(player).sort(), [
-    'bestPizzaCount', 'bestScore', 'id', 'name', 'runsLost', 'runsPlayed', 'runsWon', 'totalPizzasCompleted'
-  ]);
+  assert.deepEqual(Object.keys(player).sort(), ['id', 'name', 'runsPlayed', 'runsWon', 'runsLost',
+    'bestScore', 'bestPizzaCount', 'totalPizzasCompleted', 'previousBestScore'].sort());
 }
 
-function assertPublicPizza(pizza, isLast = false) {
-  assert.deepEqual(Object.keys(pizza).sort(), [
-    'angleToleranceDeg', 'completedCuts', 'currentSlices', 'difficultyLevel', 'grenade',
-    'guideAngles', 'id', ...(isLast ? ['outcome'] : []), 'pizzaSize', 'requiredCuts', 'requiredSlices'
-  ].sort());
-  if (pizza.grenade) {
-    assert.deepEqual(Object.keys(pizza.grenade).sort(), ['appearsAt', 'disappearsAt', 'radius', 'x', 'y']);
-  }
+function assertPublicPizza(pizza) {
+  assert.deepEqual(Object.keys(pizza).sort(), ['id', 'pizzaSize', 'requiredSlices', 'requiredCuts',
+    'x', 'y', 'radius', 'cutAngles', 'currentSlices', 'grenade'].sort());
 }
 
 function assertPublicRun(run) {
-  assert.deepEqual(Object.keys(run).sort(), [
-    'bestBefore', 'countdownMs', 'currentPizza', 'elapsedMs', 'endsAt', 'grenadesHit', 'id',
-    'lastPizza', 'pizzaCountsBySize', 'pizzasCompleted', 'pizzasSpoiled', 'playerId', 'reason',
-    'remainingMs', 'score', 'serverTime', 'startsAt', 'status', 'targetScore'
-  ]);
-  assertPublicPizza(run.currentPizza);
-  if (run.lastPizza) assertPublicPizza(run.lastPizza, true);
+  assert.deepEqual(Object.keys(run).sort(), ['id', 'playerId', 'status', 'reason', 'startsAt', 'endsAt',
+    'serverTime', 'remainingMs', 'countdownMs', 'elapsedMs', 'bestBefore', 'targetScore', 'score',
+    'pizzasCompleted', 'pizzasSpoiled', 'grenadesHit', 'pizzasMissed', 'pizzaCountsBySize', 'waveIndex',
+    'waveId', 'waveStartsAt', 'waveEndsAt', 'difficultyLevel', 'pizzas', 'lastEvents'].sort());
+  run.pizzas.forEach(assertPublicPizza);
+  for (const event of run.lastEvents) {
+    assert.deepEqual(Object.keys(event).sort(), ['id', 'outcome', 'pizza']);
+    assertPublicPizza(event.pizza);
+  }
 }
 
-test('solo profiles keep strict CRUD, unique names and fresh Rush data while preserving the earlier game file', async (t) => {
-  const fixture = await setup(t);
-  const oldFile = join(dirname(fixture.dataFile), 'game.json');
-  const oldProgress = '{"earlierGame":"preserve this progress exactly"}\n';
-  await mkdir(dirname(fixture.dataFile));
-  await writeFile(oldFile, oldProgress);
-  const initial = await fixture.request('/api/players');
-  assert.equal(initial.status, 200);
-  assert.deepEqual(initial.body, []);
-  assert.equal(initial.headers.get('cache-control'), 'no-store');
-  const player = await addPlayer(fixture, '  Adzan  ');
-  assertPublicPlayer(player);
-  assert.deepEqual(player, {
-    id: player.id, name: 'Adzan', runsPlayed: 0, runsWon: 0, runsLost: 0,
-    bestScore: 0, bestPizzaCount: 0, totalPizzasCompleted: 0
-  });
-  assert.equal((await fixture.request('/api/players', 'POST', { name: 'ADZAN' })).status, 409);
-  const other = await addPlayer(fixture, 'Alia');
-  assert.equal((await fixture.request(`/api/players/${other.id}`, 'PATCH', { name: ' adzan ' })).status, 409);
-  const renamed = await fixture.request(`/api/players/${player.id}`, 'PATCH', { name: 'ADZAN' });
-  assert.equal(renamed.status, 200);
-  assert.equal(renamed.body.id, player.id);
-  assert.equal(renamed.body.name, 'ADZAN');
-  for (const body of [null, [], {}, { name: '' }, { name: '  ' }, { name: 12 }, { name: 'x'.repeat(25) },
-    { name: 'Valid', runsWon: 5 }]) {
+test('legacy profiles import once with fresh records; CRUD persists and leaves the old file untouched', async (t) => {
+  const legacy = { players: [legacyProfile(), legacyProfile('other-id', 'Alia', 50)], runs: [{ oldRun: 'kept in the old file' }] };
+  const fixture = await setup(t, { legacy });
+  const oldText = await readFile(fixture.legacyDataFile, 'utf8');
+  await assert.rejects(readFile(fixture.dataFile), { code: 'ENOENT' });
+  const imported = await fixture.request('/api/players');
+  assert.equal(imported.status, 200);
+  assert.equal(imported.body.length, 2);
+  assertPublicPlayer(imported.body[0]);
+  assert.deepEqual(imported.body[0], { id: 'old-player', name: 'Adzan', runsPlayed: 0, runsWon: 0,
+    runsLost: 0, bestScore: 0, bestPizzaCount: 0, totalPizzasCompleted: 0, previousBestScore: 80 });
+  assert.deepEqual(JSON.parse(await readFile(fixture.dataFile, 'utf8')).runs, []);
+  assert.equal((await fixture.request('/api/players', 'POST', { name: ' ADZAN ' })).status, 409);
+  const fresh = await addPlayer(fixture, '  Fresh  ');
+  assert.equal(fresh.name, 'Fresh');
+  assert.equal(fresh.previousBestScore, null);
+  for (const body of [{ name: '' }, { name: ' ' }, { name: 'x'.repeat(25) }, { name: 12 }, { name: 'Test', bestScore: 500 }]) {
     assert.equal((await fixture.request('/api/players', 'POST', body)).status, 400);
   }
-  for (const body of [{ runsWon: 10 }, { runsLost: 0 }, { completedRoundId: 'old-client' },
-    { roundResult: { outcome: 'won', elapsedMs: 1 } }, { bestScore: 9000 }, { bestPizzaCount: 100 }]) {
-    assert.equal((await fixture.request(`/api/players/${player.id}`, 'PATCH', body)).status, 400);
-  }
-  const run = await newRun(fixture, player.id, 'crud-run');
-  assert.equal((await fixture.request(`/api/players/${player.id}`, 'DELETE')).status, 204);
-  assert.equal((await fixture.request(`/api/runs/${run.id}`)).status, 404);
-  const state = JSON.parse(await readFile(fixture.dataFile, 'utf8'));
-  assert.equal(state.players.length, 1);
-  assert.deepEqual(state.runs, []);
-  assert.equal((await fixture.request(`/api/players/${player.id}`, 'DELETE')).status, 404);
-  assert.equal(await readFile(oldFile, 'utf8'), oldProgress);
-});
-
-test('server-selected pizzas share one full minute, score ten points, and never produce an early win', async (t) => {
-  const fixture = await setup(t, { randomSequence: [0.4, 0.25, 0] });
-  const player = await addPlayer(fixture);
-  const run = await newRun(fixture, player.id, 'minute-run');
-  assertPublicRun(run);
-  assert.equal(run.currentPizza.pizzaSize, 10);
-  assert.equal(run.currentPizza.requiredSlices, 6);
-  assert.deepEqual(run.currentPizza.guideAngles, [45, 105, 165]);
-  assert.equal(run.currentPizza.grenade, null);
-  assert.equal(run.status, 'countdown');
-  assert.equal(run.countdownMs, 3000);
-  assert.equal(run.remainingMs, 60000);
-  assert.equal(run.endsAt - run.startsAt, 60000);
+  assert.equal((await fixture.request('/api/players/other-id', 'PATCH', { name: 'Fresh' })).status, 409);
+  assert.equal((await fixture.request('/api/players/other-id', 'PATCH', { name: 'Renamed' })).status, 200);
+  const run = await newRun(fixture, 'old-player', 'imported-start');
   assert.equal(run.bestBefore, 0);
   assert.equal(run.targetScore, 1);
-  const early = await cut(fixture, run, 'before-go', stroke(45));
-  assert.equal(early.body.run.status, 'countdown');
-  assert.deepEqual(early.body.run.currentPizza.completedCuts, []);
-  fixture.setTime(run.startsAt);
-  const go = await fixture.request(`/api/runs/${run.id}`);
-  assert.equal(go.body.run.status, 'playing');
-  assert.equal(go.body.run.remainingMs, 60000);
-  const completed = await completePizza(fixture, run, 1234);
-  assert.equal(completed.run.score, 10);
-  assert.equal(completed.run.currentPizza.currentSlices, 1);
-  assert.notEqual(completed.run.currentPizza.id, run.currentPizza.id);
-  assert.equal(completed.run.countdownMs, 0);
-  assert.equal(completed.run.endsAt, run.endsAt);
-  assert.deepEqual(completed.run.pizzaCountsBySize, { '8': 0, '10': 1, '14': 0 });
-  assert.equal(completed.player.runsPlayed, 0);
-  assert.equal(completed.player.bestScore, 0);
-  fixture.setTime(run.endsAt - 1);
-  const almost = await fixture.request(`/api/runs/${run.id}`);
-  assert.equal(almost.body.run.status, 'playing');
-  assert.equal(almost.body.run.remainingMs, 1);
-  const finished = await finishRun(fixture, run);
-  assert.equal(finished.run.status, 'won');
-  assert.equal(finished.run.reason, 'personal_best');
-  assert.equal(finished.run.elapsedMs, 60000);
-  assert.equal(finished.run.remainingMs, 0);
-  assert.equal(finished.player.runsPlayed, 1);
-  assert.equal(finished.player.runsWon, 1);
-  assert.equal(finished.player.bestScore, 10);
-  assert.equal(finished.player.bestPizzaCount, 1);
-  assert.equal(finished.player.totalPizzasCompleted, 1);
+  assert.equal((await fixture.request('/api/players/old-player', 'DELETE')).status, 204);
+  assert.equal((await fixture.request(`/api/runs/${run.id}`)).status, 404);
+  await close(fixture.server);
+  const restarted = await fixture.start();
+  const saved = (await restarted.request('/api/players')).body;
+  assert.deepEqual(saved.map((player) => player.name).sort(), ['Fresh', 'Renamed']);
+  assert.equal(saved.find((player) => player.id === 'other-id').previousBestScore, 50);
+  assert.equal(await readFile(fixture.legacyDataFile, 'utf8'), oldText);
 });
 
-test('incomplete strokes and repeated guides are ignored, while wrong cuts deduct five with a zero floor', async (t) => {
+test('the first cut chooses the angle, clearing a batch waits for its schedule, and the minute continues', async (t) => {
+  const fixture = await setup(t, { randomSequence: [0.5, 0] });
+  const player = await addPlayer(fixture);
+  let run = await newRun(fixture, player.id, 'scheduled-run');
+  assertPublicRun(run);
+  assert.equal(run.countdownMs, 3000);
+  assert.equal(run.remainingMs, 60000);
+  assert.equal(run.pizzas[0].pizzaSize, 12);
+  assert.equal(run.pizzas[0].radius, 36);
+  assert.deepEqual(run.pizzas[0].cutAngles, []);
+  const early = await cut(fixture, run, 'before-go', stroke(run.pizzas[0], 23));
+  assert.equal(early.body.run.status, 'countdown');
+  assert.deepEqual(early.body.run.pizzas[0].cutAngles, []);
+  fixture.setTime(run.startsAt);
+  const first = await cut(fixture, run, 'arbitrary-first-angle', stroke(run.pizzas[0], 23));
+  assert.equal(first.body.run.status, 'playing');
+  assert.ok(Math.abs(first.body.run.pizzas[0].cutAngles[0] - 23) < 1e-7);
+  run = await completePizza(fixture, first.body.run);
+  assert.equal(run.score, 10);
+  assert.deepEqual(run.pizzas, []);
+  const firstWaveId = run.waveId;
+  fixture.setTime(run.waveEndsAt - 1);
+  const waiting = await fixture.request(`/api/runs/${run.id}`);
+  assert.equal(waiting.body.run.status, 'playing');
+  assert.equal(waiting.body.run.waveId, firstWaveId);
+  assert.deepEqual(waiting.body.run.pizzas, []);
+  const next = await atWave(fixture, run, 1);
+  assert.equal(next.waveIndex, 1);
+  assert.notEqual(next.waveId, firstWaveId);
+  assert.equal(next.pizzas.length, 1);
+  assert.equal(next.endsAt, run.endsAt);
+  assert.equal(next.score, 10);
+  const final = await finishRun(fixture, next);
+  assert.equal(final.run.elapsedMs, 60000);
+  assert.equal(final.run.pizzasCompleted, 1);
+  assert.equal(final.run.pizzasMissed, 23);
+  assert.equal(final.run.score, 0);
+  assert.equal(final.run.status, 'lost');
+  assert.equal(final.player.runsPlayed, 1);
+  assert.equal(final.player.bestPizzaCount, 1);
+});
+
+test('one world-space swipe cuts multiple pizzas; later batches grow to two and three correctly scaled pizzas', async (t) => {
   const fixture = await setup(t);
   const player = await addPlayer(fixture);
-  const run = await newRun(fixture, player.id, 'cut-types');
-  fixture.setTime(run.startsAt + 500);
-  for (const [index, coordinates] of [
-    { start: { x: 0, y: 0 }, end: { x: 0.2, y: 0.2 } },
-    { start: { x: -3, y: -3 }, end: { x: 3, y: 3 } },
-    { start: { x: -0.7, y: 1.1 }, end: { x: 0.7, y: 1.1 } }
-  ].entries()) {
-    const ignored = await cut(fixture, run, `ignored-${index}`, coordinates);
-    assert.equal(ignored.status, 200);
-    assert.equal(ignored.body.run.score, 0);
-    assert.equal(ignored.body.run.pizzasSpoiled, 0);
-    assert.deepEqual(ignored.body.run.currentPizza.completedCuts, []);
-  }
-  const accepted = await cut(fixture, run, 'accepted-guide', stroke(0));
-  assert.equal(accepted.body.run.currentPizza.currentSlices, 2);
-  const duplicate = await cut(fixture, run, 'duplicate-guide', stroke(180));
-  assert.deepEqual(duplicate.body.run.currentPizza.completedCuts, [0]);
-  const changedRetry = await cut(fixture, run, 'accepted-guide', unevenStroke);
-  assert.equal(changedRetry.body.run.pizzasSpoiled, 0);
-  assert.deepEqual(changedRetry.body.run.currentPizza.completedCuts, [0]);
-  let current = (await completePizza(fixture, accepted.body.run, 500)).run;
-  for (const [index, expectedScore] of [5, 0, 0].entries()) {
-    const spoiled = await cut(fixture, current, `wrong-cut-${index}`, unevenStroke);
-    assert.equal(spoiled.status, 200);
-    assert.equal(spoiled.body.run.status, 'playing');
-    assert.equal(spoiled.body.run.score, expectedScore);
-    assert.equal(spoiled.body.run.pizzasSpoiled, index + 1);
-    assert.equal(spoiled.body.run.pizzasCompleted, 1);
-    assert.equal(spoiled.body.run.lastPizza.outcome, 'spoiled');
-    assert.equal(spoiled.body.run.endsAt, run.endsAt);
-    assert.notEqual(spoiled.body.run.currentPizza.id, current.currentPizza.id);
-    current = spoiled.body.run;
-  }
-  const stale = await cut(fixture, current, 'stale-wrong-cut', unevenStroke, run.currentPizza.id);
-  assert.equal(stale.body.run.pizzasSpoiled, 3);
-  assert.equal(stale.body.run.currentPizza.id, current.currentPizza.id);
-  assert.equal(stale.body.player.runsPlayed, 0);
+  let run = await newRun(fixture, player.id, 'multi-target-run');
+  run = await atWave(fixture, run, 4);
+  assert.equal(run.difficultyLevel, 2);
+  assert.equal(run.pizzasMissed, 4);
+  assert.deepEqual(run.pizzas.map(({ x, y }) => [x, y]), [[-70, 0], [70, 0]]);
+  const acrossBoth = { start: { x: -180, y: 0 }, end: { x: 180, y: 0 } };
+  const first = await cut(fixture, run, 'both-first-cuts', acrossBoth);
+  assert.ok(first.body.run.pizzas.every((pizza) => pizza.cutAngles.length === 1 && pizza.currentSlices === 2));
+  const right = first.body.run.pizzas[1];
+  const leftDone = await cut(fixture, run, 'left-finished', stroke(run.pizzas[0], 90));
+  assert.equal(leftDone.body.run.score, 10);
+  assert.deepEqual(leftDone.body.run.pizzas, [right]);
+  const duplicate = await cut(fixture, leftDone.body.run, 'duplicate-diameter', acrossBoth);
+  assert.deepEqual(duplicate.body.run.pizzas, [right]);
+  assert.deepEqual(duplicate.body.run.lastEvents, leftDone.body.run.lastEvents);
+  const rightDone = await cut(fixture, duplicate.body.run, 'right-finished', stroke(right, 90));
+  assert.equal(rightDone.body.run.score, 20);
+  assert.deepEqual(rightDone.body.run.pizzas, []);
+  run = await atWave(fixture, rightDone.body.run, 7);
+  fixture.setRandom([0, 0, 0.4, 0, 0.9, 0]);
+  run = await atWave(fixture, run, 8);
+  assert.equal(run.difficultyLevel, 3);
+  assert.deepEqual(run.pizzas.map(({ pizzaSize, requiredSlices, radius }) => [pizzaSize, requiredSlices, radius]),
+    [[10, 4, 30], [12, 6, 36], [14, 8, 42]]);
+  assert.deepEqual(run.pizzas.map(({ x, y }) => [x, y]), [[-70, -50], [70, -50], [0, 65]]);
 });
 
-test('grenade collision has one ten-point penalty; countdown, tiny, stale, expired and late gestures are safe', async (t) => {
-  const fixture = await setup(t, { randomSequence: [0, 0, 0.99, 0, 0] });
+test('exact batch and run deadlines precede cuts, catch up missed batches, and record the final score once', async (t) => {
+  const fixture = await setup(t);
   const player = await addPlayer(fixture);
-  const run = await newRun(fixture, player.id, 'grenade-run');
-  const initialGrenade = run.currentPizza.grenade;
-  assert.equal(initialGrenade.appearsAt, run.startsAt);
-  const early = await cut(fixture, run, 'countdown-grenade', grenadeStroke(initialGrenade));
-  assert.equal(early.body.run.grenadesHit, 0);
-  assert.equal(early.body.run.status, 'countdown');
-  // The blocked guide becomes safe at the exact disappearance timestamp.
-  let current = (await completePizza(fixture, run, initialGrenade.disappearsAt - run.startsAt)).run;
-  assert.equal(current.score, 10);
-  const tiny = await cut(fixture, current, 'tiny-grenade-stroke', grenadeStroke(current.currentPizza.grenade, 0.05));
-  assert.equal(tiny.body.run.grenadesHit, 0);
-  const grenadePizza = current.currentPizza;
-  const hit = await cut(fixture, current, 'grenade-hit', grenadeStroke(grenadePizza.grenade));
-  assert.equal(hit.body.run.score, 0);
+  let run = await newRun(fixture, player.id, 'deadline-run');
+  fixture.setTime(run.waveEndsAt - 1);
+  await cut(fixture, run, 'before-wave-deadline', stroke(run.pizzas[0], 0));
+  fixture.setTime(run.waveEndsAt);
+  const expired = await cut(fixture, run, 'at-wave-deadline', stroke(run.pizzas[0], 90));
+  assert.equal(expired.body.run.waveIndex, 1);
+  assert.equal(expired.body.run.pizzasCompleted, 0);
+  assert.equal(expired.body.run.pizzasMissed, 1);
+  assert.deepEqual(expired.body.run.pizzas[0].cutAngles, []);
+  const retry = await cut(fixture, expired.body.run, 'at-wave-deadline', stroke(expired.body.run.pizzas[0], 0));
+  assert.deepEqual(retry.body.run.pizzas[0].cutAngles, []);
+  run = await atWave(fixture, expired.body.run, 11);
+  assert.equal(run.pizzasMissed, 21);
+  fixture.setTime(run.endsAt - 1);
+  run = await completePizza(fixture, run);
+  run = await completePizza(fixture, run);
+  const partial = await cut(fixture, run, 'last-pizza-first-cut', stroke(run.pizzas[0], 0));
+  fixture.setTime(run.endsAt);
+  const final = await cut(fixture, partial.body.run, 'at-run-deadline', stroke(run.pizzas[0], 90));
+  assert.equal(final.body.run.status, 'won');
+  assert.equal(final.body.run.reason, 'personal_best');
+  assert.equal(final.body.run.score, 15);
+  assert.equal(final.body.run.pizzasCompleted, 2);
+  assert.equal(final.body.run.pizzasMissed, 22);
+  assert.equal(final.body.run.waveIndex, 11);
+  assert.deepEqual(final.body.run.pizzas, []);
+  assert.equal(final.body.run.lastEvents[0].outcome, 'missed');
+  assert.equal(final.body.player.bestScore, 15);
+  assert.equal(final.body.player.runsWon, 1);
+  const again = await finishRun(fixture, run);
+  assert.equal(again.player.runsPlayed, 1);
+  assert.equal(again.run.score, 15);
+});
+
+test('grenades and wrong cuts have separate penalties, with safe countdown, expiry, stale-wave and tiny gestures', async (t) => {
+  const fixture = await setup(t, { randomSequence: [0, 0.99, 0] });
+  const player = await addPlayer(fixture);
+  let run = await newRun(fixture, player.id, 'hazard-run');
+  const originalWave = run.waveId;
+  let grenade = run.pizzas[0].grenade;
+  assert.equal(grenade.radius, 6);
+  assert.equal(grenade.disappearsAt - grenade.appearsAt, 1800);
+  assert.equal((await cut(fixture, run, 'countdown-hazard', grenadeStroke(grenade))).body.run.grenadesHit, 0);
+  fixture.setTime(run.startsAt);
+  assert.equal((await cut(fixture, run, 'tiny-hazard', grenadeStroke(grenade, 1))).body.run.grenadesHit, 0);
+  const hit = await cut(fixture, run, 'first-hazard', grenadeStroke(grenade));
   assert.equal(hit.body.run.grenadesHit, 1);
   assert.equal(hit.body.run.pizzasSpoiled, 0);
-  assert.equal(hit.body.run.pizzasCompleted, 1);
-  assert.equal(hit.body.run.lastPizza.outcome, 'grenade');
-  assert.equal(hit.body.run.status, 'playing');
-  current = hit.body.run;
-  const retry = await cut(fixture, current, 'grenade-hit', grenadeStroke(current.currentPizza.grenade));
-  assert.equal(retry.body.run.grenadesHit, 1);
-  const stale = await cut(fixture, current, 'stale-grenade', grenadeStroke(current.currentPizza.grenade), grenadePizza.id);
+  assert.equal(hit.body.run.score, 0);
+  assert.deepEqual(hit.body.run.pizzas, []);
+  run = await atWave(fixture, hit.body.run, 1);
+  grenade = run.pizzas[0].grenade;
+  const stale = await cut(fixture, run, 'stale-wave-hazard', grenadeStroke(grenade), originalWave);
   assert.equal(stale.body.run.grenadesHit, 1);
-  assert.equal(stale.body.run.currentPizza.id, current.currentPizza.id);
-  const anotherHit = await cut(fixture, current, 'zero-score-grenade', grenadeStroke(current.currentPizza.grenade));
-  assert.equal(anotherHit.body.run.score, 0);
-  assert.equal(anotherHit.body.run.grenadesHit, 2);
-  assert.equal(anotherHit.body.run.pizzasSpoiled, 0);
-  current = anotherHit.body.run;
-  fixture.setTime(current.currentPizza.grenade.disappearsAt);
-  const expired = await cut(fixture, current, 'at-grenade-expiry', stroke(current.currentPizza.guideAngles[0]));
-  assert.equal(expired.body.run.grenadesHit, 2);
-  assert.deepEqual(expired.body.run.currentPizza.completedCuts, [0]);
-  fixture.setTime(run.endsAt);
-  const late = await cut(fixture, current, 'after-run-deadline', grenadeStroke(current.currentPizza.grenade));
-  assert.equal(late.body.run.status, 'lost');
-  assert.equal(late.body.run.grenadesHit, 2);
-  assert.equal(late.body.run.score, 0);
-  assert.equal(late.body.player.runsLost, 1);
-  assert.equal(late.body.player.bestPizzaCount, 1);
+  assert.equal(stale.body.run.pizzas.length, 1);
+  fixture.setTime(grenade.disappearsAt);
+  run = await completePizza(fixture, run, run.pizzas[0], 0);
+  assert.equal(run.score, 10);
+  run = await atWave(fixture, run, 2);
+  const wrong = await cut(fixture, run, 'wrong-chord', unevenStroke(run.pizzas[0]));
+  assert.equal(wrong.body.run.score, 5);
+  assert.equal(wrong.body.run.pizzasSpoiled, 1);
+  assert.equal(wrong.body.run.grenadesHit, 1);
+  run = await atWave(fixture, wrong.body.run, 3);
+  const secondHit = await cut(fixture, run, 'second-hazard', grenadeStroke(run.pizzas[0].grenade));
+  assert.equal(secondHit.body.run.score, 0);
+  assert.equal(secondHit.body.run.grenadesHit, 2);
+  assert.equal(secondHit.body.run.pizzasSpoiled, 1);
+  const retry = await cut(fixture, run, 'second-hazard', unevenStroke(run.pizzas[0]));
+  assert.equal(retry.body.run.grenadesHit, 2);
 });
 
-test('score and pizza records update independently, and penalties can erase an in-progress lead', async (t) => {
+test('current score and pizza records remain independent and use only Version 3.1 results', async (t) => {
   const fixture = await setup(t);
   const player = await addPlayer(fixture);
-  let run = await newRun(fixture, player.id, 'first-best');
-  run = (await completePizza(fixture, run, 1000)).run;
-  run = (await completePizza(fixture, run, 2000)).run;
+  let run = await newRun(fixture, player.id, 'first-record');
+  run = await clearWave(fixture, await atWave(fixture, run, 11));
   const first = await finishRun(fixture, run);
-  assert.equal(first.player.bestScore, 20);
-  assert.equal(first.player.bestPizzaCount, 2);
+  assert.equal(first.player.bestScore, 30);
+  assert.equal(first.player.bestPizzaCount, 3);
   assert.equal(first.player.runsWon, 1);
   run = await newRun(fixture, player.id, 'more-pizzas-lower-score');
-  assert.equal(run.bestBefore, 20);
-  assert.equal(run.targetScore, 21);
-  for (let index = 1; index <= 3; index += 1) run = (await completePizza(fixture, run, index * 1000)).run;
-  assert.equal(run.score, 30);
-  assert.equal(run.status, 'playing');
-  for (let index = 0; index < 3; index += 1) {
-    run = (await cut(fixture, run, `lose-lead-${index}`, unevenStroke)).body.run;
+  assert.equal(run.bestBefore, 30);
+  assert.equal(run.targetScore, 31);
+  for (const index of [9, 10]) {
+    run = await atWave(fixture, run, index);
+    run = await completePizza(fixture, run);
   }
+  run = await atWave(fixture, run, 11);
+  run = await completePizza(fixture, run);
+  run = await completePizza(fixture, run);
+  run = (await cut(fixture, run, 'last-spoiled', unevenStroke(run.pizzas[0]))).body.run;
   const second = await finishRun(fixture, run);
   assert.equal(second.run.score, 15);
+  assert.equal(second.run.pizzasCompleted, 4);
   assert.equal(second.run.status, 'lost');
-  assert.equal(second.run.reason, 'time_up');
-  assert.equal(second.player.bestScore, 20);
-  assert.equal(second.player.bestPizzaCount, 3);
-  assert.equal(second.player.totalPizzasCompleted, 5);
+  assert.equal(second.player.bestScore, 30);
+  assert.equal(second.player.bestPizzaCount, 4);
+  assert.equal(second.player.totalPizzasCompleted, 7);
   assert.equal(second.player.runsPlayed, 2);
-  assert.equal(second.player.runsWon, 1);
-  assert.equal(second.player.runsLost, 1);
-  run = await newRun(fixture, player.id, 'tied-score');
-  run = (await completePizza(fixture, run, 1000)).run;
-  run = (await completePizza(fixture, run, 2000)).run;
-  const tied = await finishRun(fixture, run);
-  assert.equal(tied.run.score, 20);
-  assert.equal(tied.run.status, 'lost');
-  assert.equal(tied.player.runsPlayed, 3);
-  assert.equal(tied.player.runsLost, 2);
-  assert.equal(tied.player.bestScore, 20);
-  assert.equal(tied.player.bestPizzaCount, 3);
-  assert.equal(tied.player.totalPizzasCompleted, 7);
 });
 
-test('the exact deadline rejects the final cut and reconciles all expired runs exactly once', async (t) => {
+test('parallel requests, retained start aliases and repeated final cuts keep one consistent saved result', async (t) => {
   const fixture = await setup(t);
-  const first = await addPlayer(fixture, 'First');
-  const second = await addPlayer(fixture, 'Second');
-  let run = await newRun(fixture, first.id, 'deadline-one');
-  const otherRun = await newRun(fixture, second.id, 'deadline-two');
-  run = (await completePizza(fixture, run, 1000)).run;
-  fixture.setTime(run.endsAt - 1);
-  for (let index = 0; index < run.currentPizza.requiredCuts - 1; index += 1) {
-    assert.equal((await cut(fixture, run, `before-deadline-${index}`, stroke(run.currentPizza.guideAngles[index]))).status, 200);
-  }
-  fixture.setTime(run.endsAt);
-  const last = await cut(fixture, run, 'at-deadline', stroke(run.currentPizza.guideAngles.at(-1)));
-  assert.equal(last.body.run.status, 'won');
-  assert.equal(last.body.run.score, 10);
-  assert.equal(last.body.run.pizzasCompleted, 1);
-  assert.equal(last.body.run.elapsedMs, 60000);
-  assert.equal(last.body.run.currentPizza.currentSlices, 6);
-  for (let index = 0; index < 2; index += 1) {
-    const players = (await fixture.request('/api/players')).body;
-    assert.equal(players.find((saved) => saved.id === first.id).runsWon, 1);
-    assert.equal(players.find((saved) => saved.id === second.id).runsLost, 1);
-    assert.ok(players.every((saved) => saved.runsPlayed === 1));
-  }
-  const other = await fixture.request(`/api/runs/${otherRun.id}`);
-  assert.equal(other.body.run.status, 'lost');
-  const state = JSON.parse(await readFile(fixture.dataFile, 'utf8'));
-  assert.ok(state.runs.every((saved) => saved.recorded && saved.finishedAt === saved.endsAt));
-});
-
-test('new pizzas gain difficulty at twenty and forty seconds without changing a pizza already on screen', async (t) => {
-  const fixture = await setup(t, { randomSequence: [0.4, 0, 0] });
-  const player = await addPlayer(fixture);
-  let run = await newRun(fixture, player.id, 'difficulty-run');
-  assert.equal(run.currentPizza.pizzaSize, 10);
-  assert.equal(run.currentPizza.difficultyLevel, 1);
-  run = (await completePizza(fixture, run, 19999)).run;
-  const previousPizza = run.currentPizza;
-  fixture.setTime(run.startsAt + 20000);
-  const boundary = await fixture.request(`/api/runs/${run.id}`);
-  assert.deepEqual(boundary.body.run.currentPizza, previousPizza);
-  assert.equal(boundary.body.run.currentPizza.angleToleranceDeg, 10);
-  run = (await completePizza(fixture, run, 20000)).run;
-  assert.equal(run.currentPizza.difficultyLevel, 2);
-  assert.equal(run.currentPizza.angleToleranceDeg, 8);
-  assert.equal(run.currentPizza.pizzaSize, 14);
-  fixture.setRandom([0.6, 0, 0.99, 0, 0]);
-  run = (await completePizza(fixture, run, 40000)).run;
-  assert.equal(run.currentPizza.difficultyLevel, 3);
-  assert.equal(run.currentPizza.angleToleranceDeg, 6);
-  assert.equal(run.currentPizza.pizzaSize, 14);
-  assert.equal(run.currentPizza.grenade.appearsAt, run.startsAt + 40000);
-  assert.equal(run.currentPizza.grenade.disappearsAt - run.currentPizza.grenade.appearsAt, 2200);
-  assert.equal(run.score, 30);
-  assert.deepEqual(run.pizzaCountsBySize, { '8': 0, '10': 2, '14': 1 });
-  const persisted = await fixture.request(`/api/runs/${run.id}`);
-  assert.equal(persisted.status, 200);
-  assert.deepEqual(persisted.body.run.currentPizza, run.currentPizza);
-});
-
-test('start aliases resume one run and cut IDs cannot apply twice or move to another action or run', async (t) => {
-  const fixture = await setup(t);
-  const player = await addPlayer(fixture);
-  const other = await addPlayer(fixture, 'Other');
-  const run = await newRun(fixture, player.id, 'original-start');
-  for (const requestId of ['original-start', 'resume-start', 'resume-start']) {
-    const retry = await fixture.request('/api/runs', 'POST', { playerId: player.id, requestId });
-    assert.equal(retry.status, 200);
-    assert.equal(retry.body.run.id, run.id);
-  }
-  assert.equal(fixture.getRandomCalls(), 3);
-  assert.equal((await fixture.request('/api/runs', 'POST', { playerId: other.id, requestId: 'resume-start' })).status, 409);
-  fixture.setTime(run.startsAt + 500);
-  assert.equal((await cut(fixture, run, 'original-start', stroke(0))).status, 409);
-  const firstCut = await cut(fixture, run, 'stable-cut-id', stroke(0));
-  const changedBody = await cut(fixture, run, 'stable-cut-id', unevenStroke, 'different-pizza-id');
-  assert.deepEqual(changedBody.body.run.currentPizza, firstCut.body.run.currentPizza);
-  assert.equal(changedBody.body.run.pizzasSpoiled, 0);
-  assert.equal((await fixture.request('/api/runs', 'POST', { playerId: player.id, requestId: 'stable-cut-id' })).status, 409);
-  await completePizza(fixture, firstCut.body.run, 1000);
+  const players = await Promise.all(Array.from({ length: 4 }, (_, index) => addPlayer(fixture, `Player ${index}`)));
+  const starts = await Promise.all(Array.from({ length: 4 }, (_, index) =>
+    fixture.request('/api/runs', 'POST', { playerId: players[0].id, requestId: `start-${index}` })));
+  assert.equal(starts.filter((response) => response.status === 201).length, 1);
+  assert.equal(new Set(starts.map((response) => response.body.run.id)).size, 1);
+  const run = starts[0].body.run;
+  fixture.setTime(run.startsAt);
+  await cut(fixture, run, 'first-cut', stroke(run.pizzas[0], 0));
+  const finals = await Promise.all(Array.from({ length: 3 }, () => cut(fixture, run, 'shared-final', stroke(run.pizzas[0], 90))));
+  assert.ok(finals.every((response) => response.status === 200 && response.body.run.score === 10));
+  const changed = await cut(fixture, run, 'shared-final', unevenStroke(run.pizzas[0]), 'changed-wave');
+  assert.equal(changed.body.run.pizzasCompleted, 1);
+  assert.equal(changed.body.run.pizzasSpoiled, 0);
+  assert.equal((await cut(fixture, run, 'start-0', stroke(run.pizzas[0]))).status, 409);
+  assert.equal((await fixture.request('/api/runs', 'POST', { playerId: players[0].id, requestId: 'first-cut' })).status, 409);
+  assert.equal((await fixture.request('/api/runs', 'POST', { playerId: players[1].id, requestId: 'start-1' })).status, 409);
   await finishRun(fixture, run);
-  for (const requestId of ['original-start', 'resume-start']) {
-    const retry = await fixture.request('/api/runs', 'POST', { playerId: player.id, requestId });
+  const next = await newRun(fixture, players[0].id, 'next-start');
+  assert.equal((await cut(fixture, next, 'first-cut', stroke(next.pizzas[0]))).status, 409);
+  for (const requestId of ['start-0', 'start-1']) {
+    const retry = await fixture.request('/api/runs', 'POST', { playerId: players[0].id, requestId });
     assert.equal(retry.status, 200);
     assert.equal(retry.body.run.id, run.id);
-    assert.equal(retry.body.run.status, 'won');
     assert.equal(retry.body.player.runsPlayed, 1);
   }
-  const next = await newRun(fixture, player.id, 'next-run');
-  assert.notEqual(next.id, run.id);
-  assert.equal(next.bestBefore, 10);
-  assert.equal((await cut(fixture, next, 'stable-cut-id', stroke(0))).status, 409);
-  const terminalRetry = await cut(fixture, run, 'stable-cut-id', unevenStroke);
-  assert.equal(terminalRetry.body.run.score, 10);
-  assert.equal(terminalRetry.body.player.runsPlayed, 1);
+  assert.equal((await fixture.request('/api/players')).body.length, 4);
 });
 
-test('strict JSON validation rejects client scores, times, selected pizzas and malformed cut coordinates', async (t) => {
+test('strict request schemas protect scores and previous records and accept only world-space wave cuts', async (t) => {
   const fixture = await setup(t);
+  assert.deepEqual((await fixture.request('/api/players')).body, []);
   const player = await addPlayer(fixture);
-  for (const body of [{}, null, [], { playerId: player.id }, { playerId: player.id, requestId: ' ' },
-    { playerId: player.id, requestId: 'r'.repeat(101) }, { playerId: player.id, requestId: 'size', pizzaSize: 8 },
-    { playerId: player.id, requestId: 'score', bestScore: 0 }, { playerId: player.id, requestId: 'win', outcome: 'won' }]) {
+  for (const body of [{ bestScore: 10 }, { previousBestScore: 100 }, { name: 'A', runsWon: 1 }, { completedRoundId: 'old' }]) {
+    assert.equal((await fixture.request(`/api/players/${player.id}`, 'PATCH', body)).status, 400);
+  }
+  for (const body of [null, {}, { playerId: player.id, requestId: ' ' }, { playerId: player.id, requestId: 'r'.repeat(101) },
+    { playerId: player.id, requestId: 'extra', pizzaSize: 10 }]) {
     assert.equal((await fixture.request('/api/runs', 'POST', body)).status, 400);
   }
-  const run = await newRun(fixture, player.id, 'validation-run');
+  const run = await newRun(fixture, player.id, 'validation-start');
   const original = await readFile(fixture.dataFile, 'utf8');
-  const valid = { requestId: 'valid-cut', pizzaId: run.currentPizza.id, ...stroke(0) };
-  const invalidCuts = [
-    null, [], {}, { requestId: 'missing-pizza', ...stroke(0) }, { ...valid, elapsedMs: 1 },
-    { ...valid, score: 1000 }, { ...valid, outcome: 'won' }, { ...valid, grenade: null },
-    { ...valid, requestId: 5 }, { ...valid, requestId: '' }, { ...valid, pizzaId: [] },
-    { ...valid, pizzaId: 'x'.repeat(101) }, { ...valid, start: { x: 1 } },
-    { ...valid, start: { x: 1, y: 0, z: 0 } }, { ...valid, start: { x: '1', y: 0 } },
-    { ...valid, end: { x: null, y: 0 } }, { ...valid, end: { x: 3.01, y: 0 } }
-  ];
-  for (const body of invalidCuts) {
+  const valid = { requestId: 'valid-cut', waveId: run.waveId, ...stroke(run.pizzas[0]) };
+  for (const body of [null, {}, { ...valid, waveId: [] }, { ...valid, requestId: 5 }, { ...valid, waveId: '' },
+    { requestId: 'old-pizza-cut', pizzaId: run.pizzas[0].id, ...stroke(run.pizzas[0]) },
+    { ...valid, score: 100 }, { ...valid, elapsedMs: 1 }, { ...valid, outcome: 'won' },
+    { ...valid, start: { x: '1', y: 0 } }, { ...valid, start: { x: 0, y: 0, z: 0 } },
+    { ...valid, end: { x: 200.01, y: 0 } }, { ...valid, end: { x: null, y: 0 } }]) {
     const response = await fixture.request(`/api/runs/${run.id}/cuts`, 'POST', body);
     assert.equal(response.status, 400);
     assert.deepEqual(Object.keys(response.body), ['error']);
   }
   assert.equal(await readFile(fixture.dataFile, 'utf8'), original);
-  const invalidJson = await fetch(fixture.base + '/api/runs', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{broken'
-  });
-  assert.equal(invalidJson.status, 400);
-  await invalidJson.text();
-  const oversized = await fetch(fixture.base + '/api/runs', { method: 'POST', body: ' '.repeat(8193) });
-  assert.equal(oversized.status, 413);
-  await oversized.text();
-  assert.equal((await fixture.request('/api/runs', 'POST', { playerId: 'missing', requestId: 'missing-player' })).status, 404);
+  for (const [body, expected] of [['{broken', 400], [' '.repeat(8193), 413]]) {
+    const response = await fetch(fixture.base + '/api/runs', { method: 'POST', body });
+    assert.equal(response.status, expected);
+    await response.text();
+  }
   assert.equal((await fixture.request('/api/runs/missing')).status, 404);
   assert.equal((await fixture.request('/api/runs/missing/cuts', 'POST', valid)).status, 404);
-  assert.equal((await fixture.request('/api/players', 'PUT', {})).status, 405);
   assert.equal((await fixture.request('/api/runs')).status, 405);
-  assert.equal((await fixture.request(`/api/runs/${run.id}`, 'POST', {})).status, 405);
-  const wrongMethod = await fixture.request(`/api/runs/${run.id}/cuts`);
-  assert.equal(wrongMethod.status, 405);
-  assert.equal(wrongMethod.headers.get('allow'), 'POST');
+  assert.equal((await fixture.request(`/api/runs/${run.id}/cuts`)).headers.get('allow'), 'POST');
 });
 
-test('parallel creates, starts, final cuts and result reads keep one coherent transaction history', async (t) => {
-  const fixture = await setup(t);
-  const players = await Promise.all(Array.from({ length: 8 }, (_, index) => addPlayer(fixture, `Player ${index + 1}`)));
-  assert.equal((await fixture.request('/api/players')).body.length, 8);
-  const starts = await Promise.all(Array.from({ length: 8 }, (_, index) =>
-    fixture.request('/api/runs', 'POST', { playerId: players[0].id, requestId: `parallel-start-${index}` })
-  ));
-  assert.equal(starts.filter((response) => response.status === 201).length, 1);
-  assert.ok(starts.every((response) => response.status === 200 || response.status === 201));
-  assert.equal(new Set(starts.map((response) => response.body.run.id)).size, 1);
-  const run = starts[0].body.run;
-  fixture.setTime(run.startsAt + 250);
-  const pizza = run.currentPizza;
-  const earlyCuts = await Promise.all(pizza.guideAngles.slice(0, -1).map((angle, index) =>
-    cut(fixture, run, `parallel-cut-${index}`, stroke(angle))));
-  assert.ok(earlyCuts.every((response) => response.status === 200));
-  const finals = await Promise.all([
-    cut(fixture, run, 'shared-final-cut', stroke(pizza.guideAngles.at(-1))),
-    cut(fixture, run, 'shared-final-cut', stroke(pizza.guideAngles.at(-1))),
-    cut(fixture, run, 'old-pizza-swipe', stroke(pizza.guideAngles[0]))
-  ]);
-  assert.ok(finals.every((response) => response.status === 200));
-  const live = (await fixture.request(`/api/runs/${run.id}`)).body;
-  assert.equal(live.run.status, 'playing');
-  assert.equal(live.run.pizzasCompleted, 1);
-  assert.equal(live.run.pizzasSpoiled, 0);
-  assert.equal(live.run.score, 10);
-  assert.deepEqual(live.run.currentPizza.completedCuts, []);
-  assert.equal(live.player.runsPlayed, 0);
-  fixture.setTime(run.endsAt);
-  const results = await Promise.all(Array.from({ length: 4 }, () => fixture.request(`/api/runs/${run.id}`)));
-  assert.ok(results.every((response) => response.body.player.runsPlayed === 1 && response.body.player.bestScore === 10));
-  const state = JSON.parse(await readFile(fixture.dataFile, 'utf8'));
-  assert.equal(state.runs.length, 1);
-  assert.equal(state.runs[0].startRequestIds.length, 8);
-  assert.equal(state.runs[0].cutRequestIds.length, 5);
-  assert.equal(state.players.find((saved) => saved.id === players[0].id).totalPizzasCompleted, 1);
-});
-
-test('restart preserves pizza, grenade, score, retry IDs and the original deadline while new runs use new preparation rules', async (t) => {
-  const fixture = await setup(t, { randomSequence: [0.4, 0.25, 0.99, 0, 0] });
+test('restart preserves wave timestamps, confirmed cuts and grenades while new runs use updated preparation rules', async (t) => {
+  const fixture = await setup(t, { randomSequence: [0.4, 0.99, 0.25] });
   const player = await addPlayer(fixture);
   let run = await newRun(fixture, player.id, 'restart-start');
-  run = (await completePizza(fixture, run, 1600)).run;
-  const cutBeforeRestart = await cut(fixture, run, 'before-restart-cut', stroke(run.currentPizza.guideAngles[1]));
-  run = cutBeforeRestart.body.run;
-  assert.deepEqual(run.currentPizza.completedCuts, [1]);
+  run = await clearWave(fixture, run);
+  run = await atWave(fixture, run, 4);
+  fixture.setTime(run.waveStartsAt + 1800);
+  run = (await cut(fixture, run, 'before-restart-cut', stroke(run.pizzas[0], 17))).body.run;
   const newRules = { ...fixture.rules, preparationMs: 0 };
   await writeFile(join(fixture.publicDir, 'game-rules.json'), JSON.stringify(newRules));
   assert.deepEqual(await (await fetch(fixture.base + '/game-rules.json')).json(), fixture.rules);
   await close(fixture.server);
   const restarted = await fixture.start();
   const live = { ...fixture, ...restarted };
-  assert.deepEqual(await (await fetch(live.base + '/game-rules.json')).json(), newRules);
   const loaded = await live.request(`/api/runs/${run.id}`);
   assert.equal(loaded.status, 200);
   assert.equal(loaded.body.run.endsAt, run.endsAt);
-  assert.equal(loaded.body.run.score, 10);
-  assert.deepEqual(loaded.body.run.currentPizza, run.currentPizza);
-  const retry = await cut(live, run, 'before-restart-cut', unevenStroke);
-  assert.deepEqual(retry.body.run.currentPizza, run.currentPizza);
-  run = (await completePizza(live, run, run.currentPizza.grenade.disappearsAt - run.startsAt)).run;
-  const finished = await finishRun(live, run);
-  assert.equal(finished.run.status, 'won');
-  assert.equal(finished.player.bestScore, 20);
-  assert.equal(finished.player.totalPizzasCompleted, 2);
-  const startRetry = await live.request('/api/runs', 'POST', { playerId: player.id, requestId: 'restart-start' });
-  assert.equal(startRetry.body.run.id, run.id);
-  assert.equal(startRetry.body.player.runsPlayed, 1);
+  assert.equal(loaded.body.run.waveId, run.waveId);
+  assert.deepEqual(loaded.body.run.pizzas, run.pizzas);
+  const retry = await cut(live, run, 'before-restart-cut', unevenStroke(run.pizzas[0]));
+  assert.deepEqual(retry.body.run.pizzas, run.pizzas);
+  assert.deepEqual(await (await fetch(live.base + '/game-rules.json')).json(), newRules);
+  run = await clearWave(live, await atWave(live, run, 11));
+  const final = await finishRun(live, run);
+  assert.equal(final.player.bestScore, 30);
+  assert.equal(final.player.totalPizzasCompleted, 4);
   const next = await newRun(live, player.id, 'new-rules-run');
-  assert.equal(next.endsAt - next.startsAt, 60000);
   assert.equal(next.status, 'playing');
   const stored = JSON.parse(await readFile(fixture.dataFile, 'utf8'));
   assert.equal(stored.runs.find((saved) => saved.id === run.id).rulesSnapshot.preparationMs, 3000);
@@ -587,132 +479,108 @@ test('restart preserves pizza, grenade, score, retry IDs and the original deadli
   fixture.setTime(next.endsAt);
   await close(restarted.server);
   const finalServer = await fixture.start();
-  const finalPlayers = (await finalServer.request('/api/players')).body;
-  assert.equal(finalPlayers[0].runsPlayed, 2);
-  assert.equal(finalPlayers[0].runsWon, 1);
-  assert.equal(finalPlayers[0].runsLost, 1);
-  assert.equal(finalPlayers[0].bestScore, 20);
-  assert.equal(finalPlayers[0].totalPizzasCompleted, 2);
+  const saved = (await finalServer.request('/api/players')).body[0];
+  assert.equal(saved.runsPlayed, 2);
+  assert.equal(saved.runsWon, 1);
+  assert.equal(saved.runsLost, 1);
+  assert.equal(saved.bestScore, 30);
   assert.equal((await finalServer.request('/api/players')).body[0].runsPlayed, 2);
 });
 
-test('a failed deadline save preserves the old file and retry records score, pizzas and verdict once', async (t) => {
+test('failed deadline writes roll back missed penalties and statistics so retry records them exactly once', async (t) => {
   const fixture = await setup(t);
   const player = await addPlayer(fixture);
-  let run = await newRun(fixture, player.id, 'failed-save-run');
-  run = (await completePizza(fixture, run, 1000)).run;
+  let run = await newRun(fixture, player.id, 'failed-save');
+  run = await atWave(fixture, run, 11);
+  run = await completePizza(fixture, run);
+  run = await completePizza(fixture, run);
   const original = await readFile(fixture.dataFile, 'utf8');
   const dataDirectory = dirname(fixture.dataFile);
-  const backupDirectory = join(fixture.directory, 'saved-data-backup');
+  const backup = join(fixture.directory, 'saved-backup');
   fixture.setTime(run.endsAt);
-  // After reading the data, make the real save destination unavailable.
   fixture.onNextClock(() => {
-    renameSync(dataDirectory, backupDirectory);
-    writeFileSync(dataDirectory, 'A file temporarily blocks this directory.');
+    renameSync(dataDirectory, backup);
+    writeFileSync(dataDirectory, 'Temporarily block the save directory.');
   });
   const failed = await fixture.request(`/api/runs/${run.id}`);
   assert.equal(failed.status, 500);
   assert.match(failed.body.error, /could not be saved/);
-  assert.equal(await readFile(join(backupDirectory, 'rush.json'), 'utf8'), original);
+  assert.equal(await readFile(join(backup, 'rush-3.1.json'), 'utf8'), original);
   await rm(dataDirectory);
-  await rename(backupDirectory, dataDirectory);
-  const retried = await fixture.request(`/api/runs/${run.id}`);
-  assert.equal(retried.status, 200);
-  assert.equal(retried.body.run.status, 'won');
-  assert.equal(retried.body.player.runsPlayed, 1);
-  assert.equal(retried.body.player.runsWon, 1);
-  assert.equal(retried.body.player.bestScore, 10);
-  assert.equal(retried.body.player.totalPizzasCompleted, 1);
-  assert.equal((await fixture.request('/api/players')).body[0].runsPlayed, 1);
+  await rename(backup, dataDirectory);
+  const retried = await finishRun(fixture, run);
+  assert.equal(retried.run.score, 15);
+  assert.equal(retried.run.pizzasMissed, 22);
+  assert.equal(retried.player.runsWon, 1);
+  assert.equal(retried.player.totalPizzasCompleted, 2);
+  assert.equal((await finishRun(fixture, run)).player.runsPlayed, 1);
 });
 
-test('a rejected name mutation still settles elapsed runs without keeping partial changes', async (t) => {
+test('history retains every active run and only the latest hundred finished runs without resetting totals', async (t) => {
   const fixture = await setup(t);
   const player = await addPlayer(fixture);
-  const other = await addPlayer(fixture, 'Other');
-  const run = await newRun(fixture, player.id, 'rejected-mutation-run');
-  fixture.setTime(run.endsAt);
-  const rejected = await fixture.request(`/api/players/${other.id}`, 'PATCH', { name: player.name });
-  assert.equal(rejected.status, 409);
-  const state = JSON.parse(await readFile(fixture.dataFile, 'utf8'));
-  assert.equal(state.players.find((saved) => saved.id === other.id).name, 'Other');
-  assert.equal(state.players.find((saved) => saved.id === player.id).runsLost, 1);
-  assert.equal(state.runs[0].recorded, true);
-  assert.equal((await fixture.request('/api/players')).body.find((saved) => saved.id === player.id).runsLost, 1);
-});
-
-test('history retains active runs and only the latest hundred finished runs without resetting records', async (t) => {
-  const fixture = await setup(t);
-  const player = await addPlayer(fixture);
-  const runIds = [];
-  for (let index = 0; index < 103; index += 1) {
-    const run = await newRun(fixture, player.id, `history-start-${index}`);
-    runIds.push(run.id);
+  let firstId;
+  for (let index = 0; index < 102; index += 1) {
+    const run = await newRun(fixture, player.id, `history-${index}`);
+    firstId ??= run.id;
     fixture.setTime(run.endsAt);
   }
-  assert.equal((await fixture.request('/api/players')).body[0].runsLost, 103);
-  const active = await newRun(fixture, player.id, 'history-active');
+  assert.equal((await fixture.request('/api/players')).body[0].runsLost, 102);
+  const active = await newRun(fixture, player.id, 'active-after-history');
   const state = JSON.parse(await readFile(fixture.dataFile, 'utf8'));
   assert.equal(state.runs.filter((run) => run.recorded).length, 100);
   assert.equal(state.runs.length, 101);
-  assert.ok(state.runs.some((run) => run.id === active.id && run.status === 'countdown'));
-  assert.equal((await fixture.request(`/api/runs/${runIds[0]}`)).status, 404);
-  const recentRetry = await fixture.request('/api/runs', 'POST', { playerId: player.id, requestId: 'history-start-102' });
-  assert.equal(recentRetry.body.run.id, runIds[102]);
-  assert.equal(recentRetry.body.player.runsPlayed, 103);
+  assert.ok(state.runs.some((run) => run.id === active.id));
+  assert.equal((await fixture.request(`/api/runs/${firstId}`)).status, 404);
+  const retry = await fixture.request('/api/runs', 'POST', { playerId: player.id, requestId: 'history-101' });
+  assert.equal(retry.body.player.runsPlayed, 102);
 });
 
-test('the two-thousand-ID cap keeps known retries and still allows the deadline to settle', async (t) => {
+test('the request cap preserves retries and still reconciles batch expiry and the final deadline', async (t) => {
   const fixture = await setup(t);
   const player = await addPlayer(fixture);
   const run = await newRun(fixture, player.id, 'capped-start');
   const state = JSON.parse(await readFile(fixture.dataFile, 'utf8'));
-  state.runs[0].cutRequestIds = Array.from({ length: 1999 }, (_, index) => `old-ignored-cut-${index}`);
+  state.runs[0].cutRequestIds = Array.from({ length: 1999 }, (_, index) => `old-cut-${index}`);
   await writeFile(fixture.dataFile, JSON.stringify(state));
-  assert.equal((await cut(fixture, run, 'old-ignored-cut-0', stroke(0))).status, 200);
-  assert.equal((await cut(fixture, run, 'one-too-many', stroke(0))).status, 429);
-  assert.equal((await fixture.request('/api/runs', 'POST', { playerId: player.id, requestId: 'new-alias-at-cap' })).status, 429);
+  assert.equal((await cut(fixture, run, 'old-cut-0', stroke(run.pizzas[0]))).status, 200);
+  fixture.setTime(run.waveEndsAt);
+  assert.equal((await cut(fixture, run, 'too-many', stroke(run.pizzas[0]))).status, 429);
+  const wave = await fixture.request(`/api/runs/${run.id}`);
+  assert.equal(wave.body.run.waveIndex, 1);
+  assert.equal(wave.body.run.pizzasMissed, 1);
+  assert.equal((await fixture.request('/api/runs', 'POST', { playerId: player.id, requestId: 'new-alias' })).status, 429);
   assert.equal((await fixture.request('/api/runs', 'POST', { playerId: player.id, requestId: 'capped-start' })).status, 200);
   fixture.setTime(run.endsAt);
-  const result = await cut(fixture, run, 'deadline-at-cap', stroke(0));
-  assert.equal(result.status, 200);
-  assert.equal(result.body.run.status, 'lost');
-  assert.equal(result.body.player.runsPlayed, 1);
-  const saved = JSON.parse(await readFile(fixture.dataFile, 'utf8'));
-  assert.equal(saved.runs[0].cutRequestIds.length, 1999);
-  assert.equal(saved.runs[0].recorded, true);
+  const final = await cut(fixture, run, 'final-at-cap', stroke(run.pizzas[0]));
+  assert.equal(final.status, 200);
+  assert.equal(final.body.run.pizzasMissed, 24);
+  assert.equal(final.body.player.runsPlayed, 1);
 });
 
-test('invalid saved scores, counters, pizza snapshots and rules are reported without erasing progress', async (t) => {
-  const fixture = await setup(t, { randomSequence: [0, 0, 0.99, 0, 0] });
+test('invalid stored wave, pizza, event and record data is reported without overwriting it', async (t) => {
+  const fixture = await setup(t, { randomSequence: [0, 0.99, 0] });
   const player = await addPlayer(fixture);
-  await newRun(fixture, player.id, 'corruption-fixture');
+  let run = await newRun(fixture, player.id, 'corrupt-fixture');
+  run = await clearWave(fixture, run);
+  await atWave(fixture, run, 1);
   const valid = JSON.parse(await readFile(fixture.dataFile, 'utf8'));
   const mutations = [
-    (state) => { state.players[0].bestScore = 'many'; },
+    (state) => { state.players[0].previousBestScore = -1; },
     (state) => { state.players[0].runsPlayed = 1; },
-    (state) => { state.runs[0].targetScore = 100; },
-    (state) => { state.runs[0].score = 10; },
-    (state) => { state.runs[0].pizzaCountsBySize['14'] = 1; },
-    (state) => { state.runs[0].currentPizza.guideAngles[0] = 500; },
-    (state) => { state.runs[0].currentPizza.completedCuts = [0, 1, 2, 3]; },
-    (state) => { state.runs[0].currentPizza.grenade.radius = 0.2; },
-    (state) => { state.runs[0].currentPizza.grenade.disappearsAt += 1; },
-    (state) => { state.runs[0].currentPizza.difficultyLevel = 2; },
-    (state) => { state.runs[0].rulesSnapshot.runDurationMs = 5000; },
-    (state) => { state.players = []; },
-    (state) => { state.runs.push({ ...structuredClone(state.runs[0]), id: 'second-run', requestId: 'second-start', startRequestIds: ['second-start'] }); },
-    (state) => { state.runs[0].cutRequestIds = ['corruption-fixture']; }
+    (state) => { state.runs[0].waveStartsAt += 1; },
+    (state) => { state.runs[0].eventSerial += 1; },
+    (state) => { state.runs[0].pizzas[0].radius = 99; },
+    (state) => { state.runs[0].pizzas[0].anchorAngle = 60; },
+    (state) => { state.runs[0].pizzas[0].grenade.disappearsAt += 1; },
+    (state) => { state.runs[0].lastEvents[0].pizza.anchorAngle = null; },
+    (state) => { state.runs[0].rulesSnapshot.mode = 'arcade-3.0'; }
   ];
-  const corrupted = mutations.map((mutate) => {
-    const state = structuredClone(valid);
-    mutate(state);
-    return JSON.stringify(state);
-  });
-  for (const text of ['{broken', '[]', '{"players":[],"rounds":[]}', ...corrupted]) {
+  const corrupted = mutations.map((mutate) => { const state = structuredClone(valid); mutate(state); return JSON.stringify(state); });
+  for (const text of ['{broken', '[]', ...corrupted]) {
     await writeFile(fixture.dataFile, text);
     assert.equal((await fixture.request('/api/players')).status, 500);
-    assert.equal((await fixture.request('/api/players', 'POST', { name: 'New Player' })).status, 500);
+    assert.equal((await fixture.request('/api/players', 'POST', { name: 'Extra' })).status, 500);
     assert.equal(await readFile(fixture.dataFile, 'utf8'), text);
   }
   await writeFile(fixture.dataFile, JSON.stringify(valid));
@@ -722,39 +590,44 @@ test('invalid saved scores, counters, pizza snapshots and rules are reported wit
   assert.deepEqual(JSON.parse(await readFile(fixture.dataFile, 'utf8')), valid);
 });
 
-test('only browser assets and explicit public views are exposed; request IDs and stored progress stay private', async (t) => {
-  const fixture = await setup(t, { randomSequence: [0, 0, 0.99, 0, 0] });
-  for (const filename of ['style.css', 'script.js', 'game.js']) {
-    await writeFile(join(fixture.publicDir, filename), '/* public browser file */');
+test('corrupt legacy profiles fail safely and never create a replacement store', async (t) => {
+  const fixture = await setup(t, { legacyText: '{broken' });
+  const badProfile = { ...legacyProfile(), bestScore: 'many' };
+  for (const text of ['{broken', '[]', JSON.stringify({ players: [badProfile], runs: [] }),
+    JSON.stringify({ players: [legacyProfile(), legacyProfile()], runs: [] })]) {
+    await writeFile(fixture.legacyDataFile, text);
+    const response = await fixture.request('/api/players');
+    assert.equal(response.status, 500);
+    assert.match(response.body.error, /Previous progress/);
+    assert.equal(await readFile(fixture.legacyDataFile, 'utf8'), text);
+    await assert.rejects(readFile(fixture.dataFile), { code: 'ENOENT' });
   }
+  await writeFile(fixture.legacyDataFile, JSON.stringify({ players: [legacyProfile()], runs: [] }));
+  assert.equal((await fixture.request('/api/players')).body[0].previousBestScore, 80);
+});
+
+test('public responses expose confirmed cuts only and the static allowlist protects both data versions', async (t) => {
+  const fixture = await setup(t);
+  for (const filename of ['style.css', 'script.js', 'game.js']) await writeFile(join(fixture.publicDir, filename), '/* public */');
   await writeFile(join(fixture.publicDir, 'server.js'), 'PRIVATE_SERVER_MARKER');
-  await mkdir(join(fixture.publicDir, '.data'));
-  await writeFile(join(fixture.publicDir, '.data', 'rush.json'), 'PRIVATE_DATA_MARKER');
   const player = await addPlayer(fixture);
-  const run = await newRun(fixture, player.id, 'private-start-id');
+  let run = await newRun(fixture, player.id, 'private-start-id');
+  run = await clearWave(fixture, run);
   const response = await fixture.request(`/api/runs/${run.id}`);
   assertPublicRun(response.body.run);
   assertPublicPlayer(response.body.player);
-  assert.doesNotMatch(JSON.stringify(response.body), /private-start-id|requestId|recorded|createdAt|finishedAt|rulesSnapshot|targetPizzas|bestTimesBySize/);
+  assert.doesNotMatch(JSON.stringify(response.body), /private-start-id|requestId|recorded|rulesSnapshot|anchorAngle|guideAngles|completedCuts|eventSerial/);
   assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
   assert.equal(response.headers.get('cache-control'), 'no-store');
-  const completed = await completePizza(fixture, run, 1600);
-  assertPublicRun(completed.run);
-  assertPublicPlayer(completed.player);
-  assert.doesNotMatch(JSON.stringify(completed), /requestId|recorded|rulesSnapshot/);
   for (const path of ['/', '/index.html', '/style.css', '/script.js', '/game.js', '/game-rules.json']) {
-    const file = await fetch(fixture.base + path);
-    assert.equal(file.status, 200, path);
-    assert.equal(file.headers.get('x-content-type-options'), 'nosniff');
-    await file.text();
+    const response = await fetch(fixture.base + path);
+    assert.equal(response.status, 200);
+    await response.text();
   }
-  const head = await fetch(fixture.base + '/', { method: 'HEAD' });
-  assert.equal(head.status, 200);
-  assert.equal(await head.text(), '');
-  for (const path of ['/server.js', '/.data/rush.json', '/.data/game.json', '/rush.json', '/package.json', '/.env',
-    '/test/server.test.js', '/%2e%2e/server.js', '/%2e%2e%2f.data%2frush.json', '/api/config', '/api/rounds']) {
-    const file = await fetch(fixture.base + path);
-    assert.equal(file.status, 404, path);
-    assert.doesNotMatch(await file.text(), /PRIVATE_|private-start-id/);
+  for (const path of ['/server.js', '/.data/rush-3.1.json', '/.data/rush.json', '/.data/game.json',
+    '/package.json', '/test/server.test.js', '/%2e%2e%2f.data%2frush-3.1.json', '/api/config', '/api/rounds']) {
+    const response = await fetch(fixture.base + path);
+    assert.equal(response.status, 404, path);
+    assert.doesNotMatch(await response.text(), /PRIVATE_|private-start-id/);
   }
 });

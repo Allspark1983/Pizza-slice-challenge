@@ -1,18 +1,20 @@
 {
+  "mode": "arcade-3.1",
   "runDurationMs": 60000,
   "preparationMs": 3000,
+  "waveDurationMs": 5000,
   "pizzas": [
     {
-      "sizeInches": 14,
-      "slices": 8
+      "sizeInches": 10,
+      "slices": 4
     },
     {
-      "sizeInches": 10,
+      "sizeInches": 12,
       "slices": 6
     },
     {
-      "sizeInches": 8,
-      "slices": 4
+      "sizeInches": 14,
+      "slices": 8
     }
   ]
 }
