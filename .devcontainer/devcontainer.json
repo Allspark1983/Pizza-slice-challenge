@@ -1,10 +1,10 @@
 {
-  "name": "Pizza Slice Challenge",
+  "name": "Pizza Slice Rush — Version 3",
   "image": "mcr.microsoft.com/devcontainers/javascript-node:22-bookworm",
   "forwardPorts": [3000],
   "portsAttributes": {
     "3000": {
-      "label": "Pizza Slice Challenge",
+      "label": "Pizza Slice Rush — Version 3",
       "onAutoForward": "notify"
     }
   }

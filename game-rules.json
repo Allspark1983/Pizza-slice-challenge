@@ -1,5 +1,5 @@
 {
-  "roundDurationMs": 20000,
+  "runDurationMs": 60000,
   "preparationMs": 3000,
   "pizzas": [
     {

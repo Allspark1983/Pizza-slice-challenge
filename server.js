@@ -5,14 +5,14 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  validateRules, createRound, advanceRound, applyCut, toPublicRound,
-  isRoundOver, PIZZA_SLICES
+  validateRules, createRun, advanceRun, applyRunCut, toPublicRun,
+  isRunOver, PIZZA_SLICES, SCORE_RULES, DIFFICULTY_LEVELS
 } from './game.js';
 
 const projectDirectory = dirname(fileURLToPath(import.meta.url));
 const maximumBodyBytes = 8 * 1024;
 const terminalHistoryLimit = 100;
-const requestHistoryLimit = 500;
+const requestHistoryLimit = 2000;
 
 // Only browser files and the shared game rules are public.
 const publicFiles = new Map([
@@ -101,8 +101,9 @@ function cleanPoint(value) {
 function publicPlayer(player) {
   return {
     id: player.id, name: player.name,
-    roundsWon: player.roundsWon, roundsLost: player.roundsLost,
-    bestTimesBySize: { ...player.bestTimesBySize }
+    runsPlayed: player.runsPlayed, runsWon: player.runsWon, runsLost: player.runsLost,
+    bestScore: player.bestScore, bestPizzaCount: player.bestPizzaCount,
+    totalPizzasCompleted: player.totalPizzasCompleted
   };
 }
 
@@ -116,98 +117,139 @@ function validIdList(ids) {
   return Array.isArray(ids) && ids.every(validId) && new Set(ids).size === ids.length;
 }
 
-function validSavedRound(round) {
-  if (!round || typeof round !== 'object' || Array.isArray(round) ||
-      !validId(round.id) || !validId(round.playerId) || !validId(round.requestId)) return false;
-  if (!Number.isInteger(round.pizzaSize) || !Object.hasOwn(PIZZA_SLICES, round.pizzaSize) ||
-      round.requiredSlices !== PIZZA_SLICES[round.pizzaSize] ||
-      round.requiredCuts !== round.requiredSlices / 2) return false;
-  if (!Array.isArray(round.guideAngles) || round.guideAngles.length !== round.requiredCuts ||
-      !round.guideAngles.every((angle) => Number.isInteger(angle) && angle >= 0 && angle < 180) ||
-      round.guideAngles[0] % 15 !== 0 || !round.guideAngles.every((angle, index) =>
-        angle === (round.guideAngles[0] + index * 180 / round.requiredCuts) % 180)) return false;
-  if (!Array.isArray(round.completedCuts) || new Set(round.completedCuts).size !== round.completedCuts.length ||
-      !round.completedCuts.every((index) => Number.isInteger(index) && index >= 0 && index < round.requiredCuts)) return false;
-  if (![round.createdAt, round.startsAt, round.endsAt].every((time) => Number.isSafeInteger(time) && time >= 0) ||
-      round.startsAt < round.createdAt || round.startsAt - round.createdAt > 10000 ||
-      !Number.isSafeInteger(round.roundDurationMs) || round.roundDurationMs < 1000 || round.roundDurationMs > 120000 ||
-      round.endsAt !== round.startsAt + round.roundDurationMs) return false;
-  if (!validIdList(round.startRequestIds) || !round.startRequestIds.includes(round.requestId) ||
-      !validIdList(round.cutRequestIds) ||
-      round.startRequestIds.length + round.cutRequestIds.length > requestHistoryLimit ||
-      typeof round.recorded !== 'boolean') return false;
+function validCount(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
 
-  if (round.status === 'countdown' || round.status === 'playing') {
-    return round.reason === null && round.elapsedMs === null && round.finishedAt === null &&
-      !round.recorded && round.completedCuts.length < round.requiredCuts;
+// Check saved snapshots without choosing new pizzas or resetting their difficulty.
+function validSavedPizza(pizza, run, isLast = false) {
+  if (!pizza || typeof pizza !== 'object' || Array.isArray(pizza) || !validId(pizza.id) ||
+      !Number.isInteger(pizza.pizzaSize) || !Object.hasOwn(PIZZA_SLICES, pizza.pizzaSize) ||
+      pizza.requiredSlices !== PIZZA_SLICES[pizza.pizzaSize] ||
+      pizza.requiredCuts !== pizza.requiredSlices / 2) return false;
+  if (!Array.isArray(pizza.guideAngles) || pizza.guideAngles.length !== pizza.requiredCuts ||
+      !pizza.guideAngles.every((angle) => Number.isInteger(angle) && angle >= 0 && angle < 180) ||
+      pizza.guideAngles[0] % 15 !== 0 || !pizza.guideAngles.every((angle, index) =>
+        angle === (pizza.guideAngles[0] + index * 180 / pizza.requiredCuts) % 180)) return false;
+  if (!Array.isArray(pizza.completedCuts) || new Set(pizza.completedCuts).size !== pizza.completedCuts.length ||
+      !pizza.completedCuts.every((index) => Number.isInteger(index) && index >= 0 && index < pizza.requiredCuts)) return false;
+
+  const level = DIFFICULTY_LEVELS.find((item) => item.level === pizza.difficultyLevel);
+  if (!level || pizza.angleToleranceDeg !== level.angleToleranceDeg) return false;
+  const grenade = pizza.grenade;
+  if (grenade !== null) {
+    if (!hasExactKeys(grenade, ['x', 'y', 'radius', 'appearsAt', 'disappearsAt']) ||
+        !Number.isFinite(grenade.x) || !Number.isFinite(grenade.y) || grenade.radius !== 0.19 ||
+        Math.abs(Math.hypot(grenade.x, grenade.y) - 0.70) > 1e-9 ||
+        !validCount(grenade.appearsAt) || !validCount(grenade.disappearsAt) ||
+        grenade.appearsAt < run.startsAt || grenade.appearsAt >= run.endsAt ||
+        grenade.disappearsAt - grenade.appearsAt !== level.grenadeDurationMs) return false;
+    if (!pizza.guideAngles.some((angle) => {
+      const radians = angle * Math.PI / 180;
+      return Math.abs(grenade.x * Math.sin(radians) - grenade.y * Math.cos(radians)) <= 1e-9;
+    })) return false;
   }
-  if (!isRoundOver(round) || !Number.isSafeInteger(round.elapsedMs) || round.elapsedMs < 1 ||
-      !Number.isSafeInteger(round.finishedAt)) return false;
-  if (round.status === 'won') {
-    if (round.reason !== 'correct_slices' || round.completedCuts.length !== round.requiredCuts) return false;
-  } else if (!['wrong_cut', 'timeout'].includes(round.reason) || round.completedCuts.length >= round.requiredCuts) {
-    return false;
+
+  if (!isLast) {
+    return !Object.hasOwn(pizza, 'outcome') && pizza.completedCuts.length < pizza.requiredCuts;
   }
-  if (round.reason === 'timeout') {
-    return round.elapsedMs === round.roundDurationMs && round.finishedAt === round.endsAt;
+  if (pizza.outcome === 'completed') return pizza.completedCuts.length === pizza.requiredCuts;
+  if (pizza.outcome === 'spoiled') return pizza.completedCuts.length < pizza.requiredCuts;
+  return pizza.outcome === 'grenade' && grenade !== null && pizza.completedCuts.length < pizza.requiredCuts;
+}
+
+function validSavedRun(run) {
+  if (!run || typeof run !== 'object' || Array.isArray(run) ||
+      !validId(run.id) || !validId(run.playerId) || !validId(run.requestId)) return false;
+  let snapshot;
+  try { snapshot = validateRules(run.rulesSnapshot); }
+  catch { return false; }
+  if (![run.createdAt, run.startsAt, run.endsAt].every(validCount) ||
+      run.startsAt - run.createdAt !== snapshot.preparationMs ||
+      run.runDurationMs !== snapshot.runDurationMs ||
+      run.endsAt - run.startsAt !== run.runDurationMs) return false;
+  if (![run.bestBefore, run.targetScore, run.score, run.pizzasCompleted,
+    run.pizzasSpoiled, run.grenadesHit].every(validCount) ||
+      run.targetScore !== run.bestBefore + 1 ||
+      run.score / SCORE_RULES.completedPizza > run.pizzasCompleted ||
+      !hasExactKeys(run.pizzaCountsBySize, ['8', '10', '14']) ||
+      !Object.values(run.pizzaCountsBySize).every(validCount) ||
+      Object.values(run.pizzaCountsBySize).reduce((sum, count) => sum + count, 0) !== run.pizzasCompleted) return false;
+  if (!validIdList(run.startRequestIds) || !run.startRequestIds.includes(run.requestId) ||
+      !validIdList(run.cutRequestIds) ||
+      run.startRequestIds.length + run.cutRequestIds.length > requestHistoryLimit ||
+      typeof run.recorded !== 'boolean') return false;
+  if (!validSavedPizza(run.currentPizza, run)) return false;
+  const hasFinishedPizza = run.pizzasCompleted > 0 || run.pizzasSpoiled > 0 || run.grenadesHit > 0;
+  if (hasFinishedPizza) {
+    if (!validSavedPizza(run.lastPizza, run, true) || run.lastPizza.id === run.currentPizza.id) return false;
+    if (run.lastPizza.outcome === 'completed' && run.pizzaCountsBySize[run.lastPizza.pizzaSize] === 0) return false;
+    if (run.lastPizza.outcome === 'spoiled' && run.pizzasSpoiled === 0) return false;
+    if (run.lastPizza.outcome === 'grenade' && run.grenadesHit === 0) return false;
+  } else if (run.lastPizza !== null) return false;
+
+  if (run.status === 'countdown' || run.status === 'playing') {
+    return run.reason === null && run.elapsedMs === null && run.finishedAt === null &&
+      !run.recorded && (run.status === 'playing' ||
+        (!hasFinishedPizza && run.currentPizza.completedCuts.length === 0));
   }
-  return round.finishedAt >= round.startsAt && round.finishedAt < round.endsAt &&
-    round.elapsedMs === Math.max(1, round.finishedAt - round.startsAt);
+  const won = run.score > run.bestBefore;
+  return run.status === (won ? 'won' : 'lost') && run.reason === (won ? 'personal_best' : 'time_up') &&
+    run.elapsedMs === run.runDurationMs && run.finishedAt === run.endsAt;
 }
 
 function validSavedState(state) {
-  if (!hasExactKeys(state, ['players', 'rounds']) || !Array.isArray(state.players) || !Array.isArray(state.rounds)) return false;
+  if (!hasExactKeys(state, ['players', 'runs']) || !Array.isArray(state.players) || !Array.isArray(state.runs)) return false;
   const playersById = new Map();
   const names = new Set();
   for (const player of state.players) {
-    if (!hasExactKeys(player, ['id', 'name', 'roundsWon', 'roundsLost', 'bestTimesBySize']) ||
+    if (!hasExactKeys(player, ['id', 'name', 'runsPlayed', 'runsWon', 'runsLost',
+      'bestScore', 'bestPizzaCount', 'totalPizzasCompleted']) ||
         !validId(player.id) || playersById.has(player.id) || typeof player.name !== 'string' ||
         !player.name || player.name.length > 24 || player.name !== player.name.trim() ||
-        names.has(player.name.toLowerCase()) || !Number.isSafeInteger(player.roundsWon) || player.roundsWon < 0 ||
-        !Number.isSafeInteger(player.roundsLost) || player.roundsLost < 0 ||
-        !Number.isSafeInteger(player.roundsWon + player.roundsLost) ||
-        !hasExactKeys(player.bestTimesBySize, ['8', '10', '14'])) return false;
-    const bestTimes = Object.values(player.bestTimesBySize);
-    if (!bestTimes.every((time) => time === null || (Number.isSafeInteger(time) && time >= 1)) ||
-        bestTimes.filter((time) => time !== null).length > player.roundsWon) return false;
+        names.has(player.name.toLowerCase()) ||
+        ![player.runsPlayed, player.runsWon, player.runsLost, player.bestScore,
+          player.bestPizzaCount, player.totalPizzasCompleted].every(validCount) ||
+        player.runsWon + player.runsLost !== player.runsPlayed ||
+        player.bestPizzaCount > player.totalPizzasCompleted ||
+        player.bestScore / SCORE_RULES.completedPizza > player.bestPizzaCount ||
+        (player.runsPlayed === 0 && player.totalPizzasCompleted !== 0) ||
+        (player.runsWon > 0 && player.bestScore === 0)) return false;
     playersById.set(player.id, player);
     names.add(player.name.toLowerCase());
   }
 
-  const roundIds = new Set();
-  const startIds = new Set();
-  const cutIds = new Set();
+  const runIds = new Set();
+  const requestIds = new Set();
   const activePlayers = new Set();
   const recordedCounts = new Map();
-  for (const round of state.rounds) {
-    if (!validSavedRound(round) || roundIds.has(round.id) || !playersById.has(round.playerId)) return false;
-    roundIds.add(round.id);
-    for (const id of round.startRequestIds) {
-      if (startIds.has(id)) return false;
-      startIds.add(id);
+  for (const run of state.runs) {
+    if (!validSavedRun(run) || runIds.has(run.id) || !playersById.has(run.playerId)) return false;
+    runIds.add(run.id);
+    for (const id of [...run.startRequestIds, ...run.cutRequestIds]) {
+      if (requestIds.has(id)) return false;
+      requestIds.add(id);
     }
-    for (const id of round.cutRequestIds) {
-      if (cutIds.has(id)) return false;
-      cutIds.add(id);
-    }
-    if (!isRoundOver(round)) {
-      if (activePlayers.has(round.playerId)) return false;
-      activePlayers.add(round.playerId);
-    } else if (round.recorded) {
-      const player = playersById.get(round.playerId);
-      const counts = recordedCounts.get(player.id) || { won: 0, lost: 0 };
-      counts[round.status] += 1;
+    const player = playersById.get(run.playerId);
+    if (run.bestBefore > player.bestScore) return false;
+    if (!isRunOver(run)) {
+      if (activePlayers.has(run.playerId)) return false;
+      activePlayers.add(run.playerId);
+    } else if (run.recorded) {
+      const counts = recordedCounts.get(player.id) || { won: 0, lost: 0, pizzas: 0 };
+      counts[run.status] += 1;
+      counts.pizzas += run.pizzasCompleted;
       recordedCounts.set(player.id, counts);
-      if (counts.won > player.roundsWon || counts.lost > player.roundsLost) return false;
-      if (round.status === 'won' && (player.bestTimesBySize[round.pizzaSize] === null ||
-          player.bestTimesBySize[round.pizzaSize] > round.elapsedMs)) return false;
+      if (counts.won > player.runsWon || counts.lost > player.runsLost ||
+          counts.pizzas > player.totalPizzasCompleted ||
+          run.score > player.bestScore || run.pizzasCompleted > player.bestPizzaCount) return false;
     }
   }
   return true;
 }
 
 export async function createAppServer({
-  dataFile = join(projectDirectory, '.data', 'game.json'),
+  dataFile = join(projectDirectory, '.data', 'rush.json'),
   publicDir = projectDirectory,
   clock = Date.now,
   random = Math.random
@@ -230,7 +272,7 @@ export async function createAppServer({
     try {
       text = await readFile(dataFile, 'utf8');
     } catch (error) {
-      if (error.code === 'ENOENT') return { players: [], rounds: [] };
+      if (error.code === 'ENOENT') return { players: [], runs: [] };
       throw new RequestError(500, 'Saved progress could not be read. Please check the data file.');
     }
     try {
@@ -247,7 +289,7 @@ export async function createAppServer({
     try {
       await mkdir(dirname(dataFile), { recursive: true });
       await writeFile(temporaryFile, JSON.stringify(state, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
-      // Players and rounds replace the old file together, never half a result.
+      // Players and runs replace the old file together, never half a result.
       await rename(temporaryFile, dataFile);
     } catch {
       await unlink(temporaryFile).catch(() => {});
@@ -255,28 +297,32 @@ export async function createAppServer({
     }
   }
 
-  function recordResult(state, round) {
-    if (!isRoundOver(round) || round.recorded) return false;
-    const player = state.players.find((item) => item.id === round.playerId);
-    if (!Number.isSafeInteger(player.roundsWon + player.roundsLost + 1)) {
-      throw new RequestError(409, 'This player has reached the round limit.');
+  function recordResult(state, run) {
+    if (!isRunOver(run) || run.recorded) return false;
+    const player = state.players.find((item) => item.id === run.playerId);
+    if (!Number.isSafeInteger(player.runsPlayed + 1) ||
+        !Number.isSafeInteger(player.totalPizzasCompleted + run.pizzasCompleted)) {
+      throw new RequestError(409, 'This player has reached the saved progress limit.');
     }
-    if (round.status === 'won') {
-      player.roundsWon += 1;
-      const best = player.bestTimesBySize[round.pizzaSize];
-      if (best === null || round.elapsedMs < best) player.bestTimesBySize[round.pizzaSize] = round.elapsedMs;
+    player.runsPlayed += 1;
+    if (run.status === 'won') {
+      player.runsWon += 1;
     } else {
-      player.roundsLost += 1;
+      player.runsLost += 1;
     }
-    round.recorded = true;
+    // Score and pizza records are independent: penalties can lower a run's score.
+    player.bestScore = Math.max(player.bestScore, run.score);
+    player.bestPizzaCount = Math.max(player.bestPizzaCount, run.pizzasCompleted);
+    player.totalPizzasCompleted += run.pizzasCompleted;
+    run.recorded = true;
     return true;
   }
 
-  function reconcileRounds(state, nowMs) {
+  function reconcileRuns(state, nowMs) {
     let changed = false;
-    state.rounds = state.rounds.map((round) => {
-      const updated = advanceRound(round, nowMs);
-      if (updated !== round) changed = true;
+    state.runs = state.runs.map((run) => {
+      const updated = advanceRun(run, nowMs);
+      if (updated !== run) changed = true;
       if (recordResult(state, updated)) changed = true;
       return updated;
     });
@@ -284,11 +330,11 @@ export async function createAppServer({
   }
 
   function trimHistory(state) {
-    const finished = state.rounds.filter(isRoundOver)
+    const finished = state.runs.filter(isRunOver)
       .sort((first, second) => second.finishedAt - first.finishedAt);
     if (finished.length <= terminalHistoryLimit) return false;
-    const keep = new Set(finished.slice(0, terminalHistoryLimit).map((round) => round.id));
-    state.rounds = state.rounds.filter((round) => !isRoundOver(round) || keep.has(round.id));
+    const keep = new Set(finished.slice(0, terminalHistoryLimit).map((run) => run.id));
+    state.runs = state.runs.filter((run) => !isRunOver(run) || keep.has(run.id));
     return true;
   }
 
@@ -297,7 +343,7 @@ export async function createAppServer({
       const saved = await loadState();
       const nowMs = clock();
       if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new RequestError(500, 'The server clock is unavailable.');
-      let reconciled = reconcileRounds(saved, nowMs);
+      let reconciled = reconcileRuns(saved, nowMs);
       if (trimHistory(saved)) reconciled = true;
       // A rejected operation cannot partially change the reconciled data.
       const working = structuredClone(saved);
@@ -309,7 +355,7 @@ export async function createAppServer({
         throw error;
       }
       let changed = reconciled || reply.changed;
-      if (reconcileRounds(working, nowMs)) changed = true;
+      if (reconcileRuns(working, nowMs)) changed = true;
       if (trimHistory(working)) changed = true;
       if (changed) await saveState(working);
       return { status: reply.status, body: reply.body() };
@@ -325,28 +371,27 @@ export async function createAppServer({
     return player;
   }
 
-  function findRound(state, id) {
-    const round = state.rounds.find((item) => item.id === id);
-    if (!round) throw new RequestError(404, 'That round could not be found. Reload players to continue.');
-    return round;
+  function findRun(state, id) {
+    const run = state.runs.find((item) => item.id === id);
+    if (!run) throw new RequestError(404, 'That run could not be found. Reload players to continue.');
+    return run;
   }
 
-  function checkRequestCapacity(round) {
-    if (round.startRequestIds.length + round.cutRequestIds.length >= requestHistoryLimit) {
-      throw new RequestError(429, 'This round has received too many requests. Reload its current result.');
+  function checkRequestCapacity(run) {
+    if (run.startRequestIds.length + run.cutRequestIds.length >= requestHistoryLimit) {
+      throw new RequestError(429, 'This run has received too many requests. Reload its current result.');
     }
   }
 
-  function roundFeedback(round) {
-    if (round.status === 'won') return `Perfect portions! Your pizza has ${round.requiredSlices} slices.`;
-    if (round.reason === 'wrong_cut') return 'Uneven slices! This round is lost.';
-    if (round.reason === 'timeout') return "Time's up! This round is lost.";
-    if (round.status === 'countdown') return 'Get ready. Wait for Go before cutting.';
-    return 'Follow a dashed guide across the centre of the pizza.';
+  function runFeedback(run) {
+    if (run.status === 'won') return `New personal best: ${run.score} points!`;
+    if (run.status === 'lost') return `Time's up! You scored ${run.score} points. Try again to beat your best.`;
+    if (run.status === 'countdown') return 'Get ready. Wait for Go before cutting.';
+    return 'Complete pizzas, follow the guides, and watch for grenades. Keep going until the minute ends.';
   }
 
-  function envelope(state, round, nowMs, feedback = roundFeedback(round)) {
-    return { round: toPublicRound(round, nowMs), player: publicPlayer(findPlayer(state, round.playerId)), feedback };
+  function envelope(state, run, nowMs, feedback = runFeedback(run)) {
+    return { run: toPublicRun(run, nowMs), player: publicPlayer(findPlayer(state, run.playerId)), feedback };
   }
 
   function methodNotAllowed(response, methods) {
@@ -373,7 +418,10 @@ export async function createAppServer({
           const name = cleanName(body.name);
           answer = await transact((state) => {
             checkUniqueName(state.players, name);
-            const player = { id: randomUUID(), name, roundsWon: 0, roundsLost: 0, bestTimesBySize: { '8': null, '10': null, '14': null } };
+            const player = {
+              id: randomUUID(), name, runsPlayed: 0, runsWon: 0, runsLost: 0,
+              bestScore: 0, bestPizzaCount: 0, totalPizzasCompleted: 0
+            };
             state.players.push(player);
             return { status: 201, changed: true, body: () => publicPlayer(player) };
           });
@@ -395,66 +443,71 @@ export async function createAppServer({
           answer = await transact((state) => {
             findPlayer(state, id);
             state.players = state.players.filter((player) => player.id !== id);
-            state.rounds = state.rounds.filter((round) => round.playerId !== id);
+            state.runs = state.runs.filter((run) => run.playerId !== id);
             return { status: 204, changed: true, body: () => null };
           });
         } else methodNotAllowed(response, ['PATCH', 'DELETE']);
-      } else if (pathname === '/api/rounds') {
+      } else if (pathname === '/api/runs') {
         if (request.method !== 'POST') methodNotAllowed(response, ['POST']);
         const body = await readJson(request);
-        requireKeys(body, ['playerId', 'requestId'], 'A new round needs only playerId and requestId.');
+        requireKeys(body, ['playerId', 'requestId'], 'A new run needs only playerId and requestId.');
         const playerId = cleanId(body.playerId);
         const requestId = cleanId(body.requestId);
         answer = await transact((state, nowMs) => {
-          const previous = state.rounds.find((round) => round.startRequestIds.includes(requestId));
+          if (state.runs.some((run) => run.cutRequestIds.includes(requestId))) {
+            throw new RequestError(409, 'That request ID was already used for a cut.');
+          }
+          const previous = state.runs.find((run) => run.startRequestIds.includes(requestId));
           if (previous) {
             if (previous.playerId !== playerId) throw new RequestError(409, 'That start request ID belongs to another player.');
             return { status: 200, changed: false, body: () => envelope(state, previous, nowMs) };
           }
           const player = findPlayer(state, playerId);
-          const active = state.rounds.find((round) => round.playerId === playerId && !isRoundOver(round));
+          const active = state.runs.find((run) => run.playerId === playerId && !isRunOver(run));
           if (active) {
             checkRequestCapacity(active);
             active.startRequestIds.push(requestId);
-            return { status: 200, changed: true, body: () => envelope(state, active, nowMs, 'Your current round has been resumed.') };
+            return { status: 200, changed: true, body: () => envelope(state, active, nowMs, 'Your current run has been resumed.') };
           }
-          if (player.roundsWon + player.roundsLost >= Number.MAX_SAFE_INTEGER) {
-            throw new RequestError(409, 'This player has reached the round limit.');
+          if (player.runsPlayed >= Number.MAX_SAFE_INTEGER || player.bestScore >= Number.MAX_SAFE_INTEGER) {
+            throw new RequestError(409, 'This player has reached the saved progress limit.');
           }
-          const round = createRound({ id: randomUUID(), playerId, requestId }, rules, nowMs, random);
-          round.startRequestIds = [requestId];
-          state.rounds.push(round);
-          return { status: 201, changed: true, body: () => envelope(state, round, nowMs) };
+          const run = createRun({ id: randomUUID(), playerId, requestId, bestScore: player.bestScore }, rules, nowMs, random, randomUUID);
+          state.runs.push(run);
+          return { status: 201, changed: true, body: () => envelope(state, run, nowMs) };
         });
-      } else if (/^\/api\/rounds\/[^/]+\/cuts$/.test(pathname)) {
+      } else if (/^\/api\/runs\/[^/]+\/cuts$/.test(pathname)) {
         if (request.method !== 'POST') methodNotAllowed(response, ['POST']);
         const id = decodeId(pathname.split('/')[3]);
         const body = await readJson(request);
-        requireKeys(body, ['requestId', 'start', 'end'], 'A cut needs only requestId, start and end.');
+        requireKeys(body, ['requestId', 'pizzaId', 'start', 'end'], 'A cut needs only requestId, pizzaId, start and end.');
         const requestId = cleanId(body.requestId);
-        const stroke = { start: cleanPoint(body.start), end: cleanPoint(body.end) };
+        const stroke = { pizzaId: cleanId(body.pizzaId), start: cleanPoint(body.start), end: cleanPoint(body.end) };
         answer = await transact((state, nowMs) => {
-          const round = findRound(state, id);
-          const previous = state.rounds.find((item) => item.cutRequestIds.includes(requestId));
-          if (previous && previous.id !== id) throw new RequestError(409, 'That cut request ID belongs to another round.');
-          if (isRoundOver(round)) {
-            return { status: 200, changed: false, body: () => envelope(state, round, nowMs) };
+          const run = findRun(state, id);
+          if (state.runs.some((item) => item.startRequestIds.includes(requestId))) {
+            throw new RequestError(409, 'That request ID was already used to start a run.');
+          }
+          const previous = state.runs.find((item) => item.cutRequestIds.includes(requestId));
+          if (previous && previous.id !== id) throw new RequestError(409, 'That cut request ID belongs to another run.');
+          if (isRunOver(run)) {
+            return { status: 200, changed: false, body: () => envelope(state, run, nowMs) };
           }
           if (previous) {
-            return { status: 200, changed: false, body: () => envelope(state, round, nowMs, 'That cut request was already received.') };
+            return { status: 200, changed: false, body: () => envelope(state, run, nowMs, 'That cut request was already received.') };
           }
-          checkRequestCapacity(round);
-          const result = applyCut(round, stroke, nowMs);
-          result.round.cutRequestIds.push(requestId);
-          state.rounds[state.rounds.findIndex((item) => item.id === id)] = result.round;
-          return { status: 200, changed: true, body: () => envelope(state, result.round, nowMs, result.feedback) };
+          checkRequestCapacity(run);
+          const result = applyRunCut(run, stroke, nowMs, random, randomUUID);
+          result.run.cutRequestIds.push(requestId);
+          state.runs[state.runs.findIndex((item) => item.id === id)] = result.run;
+          return { status: 200, changed: true, body: () => envelope(state, result.run, nowMs, result.feedback) };
         });
-      } else if (/^\/api\/rounds\/[^/]+$/.test(pathname)) {
+      } else if (/^\/api\/runs\/[^/]+$/.test(pathname)) {
         if (request.method !== 'GET') methodNotAllowed(response, ['GET']);
         const id = decodeId(pathname.split('/')[3]);
         answer = await transact((state, nowMs) => {
-          const round = findRound(state, id);
-          return { status: 200, changed: false, body: () => envelope(state, round, nowMs) };
+          const run = findRun(state, id);
+          return { status: 200, changed: false, body: () => envelope(state, run, nowMs) };
         });
       } else {
         const browserFile = publicFiles.get(pathname);
@@ -491,7 +544,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     const server = await createAppServer();
     const host = process.env.HOST || '127.0.0.1';
     server.listen(Number(process.env.PORT || 3000), host, () => {
-      console.log(`Pizza Slice Challenge is running at http://${host}:${server.address().port}`);
+      console.log(`Pizza Slice Rush Version 3 is running at http://${host}:${server.address().port}`);
     });
   } catch (error) {
     console.error(error.message);

@@ -1,71 +1,78 @@
-# Pizza Slice Challenge
+# Pizza Slice Rush — Version 3
 
-**GitHub repository:** [Allspark1983/Pizza-slice-challenge](https://github.com/Allspark1983/Pizza-slice-challenge), branch **`main`**.
+**Repository:** [Allspark1983/Pizza-slice-challenge](https://github.com/Allspark1983/Pizza-slice-challenge), branch **`main`**.
 
-A game built with **HTML, CSS, plain JavaScript, and a Node.js REST API**. A whole pizza appears, and you cut it into the requested number of equal slices. The server checks each cut and decides whether you win or lose.
+A **solo 60-second game** built with HTML, CSS, plain JavaScript, and a Node.js REST API. Slice one pizza at a time, avoid temporary grenades, and try to beat your personal best **score**. The API judges cuts, applies points and penalties, and decides the final result.
 
 ## How to play
 
-1. Add or choose a player and start a round.
-2. The server randomly chooses the pizza size and rotates its guide lines. Get ready for **3, 2, 1**.
-3. At **Go**, you have **20 seconds** to complete all the required cuts.
-4. Draw a straight line from one side of the pizza, through its centre, to the opposite side, following a guide. Use a mouse, touch, or pen. You can also choose an angle with the keyboard control and press **Make cut**.
-5. Complete every required guide before the deadline to win. The REST API returns the result, and the page displays it.
+1. Add or choose your solo profile and start a run.
+2. Wait for **3, 2, 1**. At **Go**, one continuous **60-second** clock begins.
+3. Follow the guides with full straight cuts through the pizza's centre. Use a mouse, touch, or pen, or aim with the keyboard angle control and choose **Make cut**.
+4. Complete the pizza to earn **10 points**. The next random pizza appears immediately, with no new preparation countdown.
+5. Avoid the grenade when one appears. It temporarily blocks one guide: cut other guides first or wait until it disappears.
+6. Keep playing for the full minute. At zero, your final score is compared with the personal best saved when the run started.
 
-| Whole pizza size | Equal slices required | Full cuts through the centre |
+| Event | Score change | What happens next |
 | --- | --- | --- |
-| **14 inches** | **8 slices** | **4 cuts**, spaced 45° apart. |
-| **10 inches** | **6 slices** | **3 cuts**, spaced 60° apart. |
-| **8 inches** | **4 slices** | **2 cuts**, spaced 90° apart. |
+| Complete all required cuts on a pizza. | **+10** | Completed-pizza count increases and a new pizza appears. |
+| Make a wrong completed cut. | **−5** | That pizza is spoiled and replaced. |
+| Swipe through an active grenade. | **−10** | Grenade-hit count increases and the pizza is replaced; there is no extra wrong-cut deduction. |
 
-A **diameter** goes all the way across a circle through its centre. Each complete diameter follows two opposite slice boundaries. Four evenly spaced diameter cuts therefore make eight equal wedges. Rotating the guides changes where to cut while preserving the spacing.
+**Your score never goes below zero.** Every completion or penalty keeps the same minute running. Short/outside strokes and repeated correct cuts normally have no effect. Grenades are checked first, so a swipe through an active grenade can cost points even when it would otherwise be an incomplete or duplicate cut.
 
-A completed cut outside the permitted guide/centre tolerance loses the round. An incomplete stroke or a stroke outside the pizza is ignored. Repeating a correct cut already accepted does not add another cut or cause a loss.
+## Pizza sizes and equal slices
 
-The geometry check allows some drawing inaccuracy: **up to 10°** from a guide and **0.12 of the pizza radius** from the centre. An accepted stroke counts as that guide's diameter cut.
+| Whole pizza | Equal slices required | Full diameter cuts |
+| --- | --- | --- |
+| **14 inches** | **8** | **4**, spaced 45° apart. |
+| **10 inches** | **6** | **3**, spaced 60° apart. |
+| **8 inches** | **4** | **2**, spaced 90° apart. |
 
-The preparation countdown is excluded from your finish time. The server owns the 20-second deadline: a cut processed by the server at or after it loses. Refreshing or switching tabs does not reset or pause that deadline. Returning to the same player's active round resumes its existing state.
+A **diameter** passes from one side through the centre to the opposite side. Each full diameter follows two opposite slice boundaries, so four evenly spaced diameter cuts create eight equal wedges. The server chooses each pizza's size and guide rotation.
 
-## Player profiles and leaderboards
+## Increasing difficulty
 
-Players keep their own wins, losses, and best winning times. **Each pizza size has its own leaderboard**, so an 8-inch result is compared with other 8-inch results. Lower successful times rank first; players without a best time for that size follow. Ties use more total wins, then fewer total losses, then player name.
+Difficulty changes for **new pizzas** at 20 and 40 seconds of playing time. A pizza already on screen keeps its original guides and tolerance until it is replaced.
 
-The public player record includes `id`, `name`, `roundsWon`, `roundsLost`, and `bestTimesBySize`. That last object has keys `"8"`, `"10"`, and `"14"`; each value is a best finish in milliseconds or `null` if there is no winning time for that size.
+| Level | Playing time when the pizza appears | Angle tolerance | Grenade chance per new pizza | Grenade visible for |
+| --- | --- | --- | --- | --- |
+| **1** | Before 20 seconds. | 10° | 15% | 1.6 seconds. |
+| **2** | From 20 to before 40 seconds. | 8° | 30% | 1.9 seconds. |
+| **3** | From 40 seconds onward. | 6° | 50% | 2.2 seconds. |
 
-This is a casual game for people using the same server's records. Times use when a cut is **processed by the server**, so network and server-queue delays are included. The server checks submitted geometry and its own deadline; the game is not an anti-cheat system.
+Level 1 gives each size an equal chance. At level 2, the probabilities for **14 / 10 / 8 inches** are **50% / 30% / 20%**; at level 3 they are **65% / 25% / 10%**. Larger pizzas need more cuts. Centre tolerance stays **0.12 of the pizza radius** at every level.
 
-| CRUD action | What the user does |
-| --- | --- |
-| **Create** | Add a player. |
-| **Read** | View players, results, and a pizza size's leaderboard. |
-| **Update** | Edit a player's name. The server also updates progress after judging a round. |
-| **Delete** | Remove a player and their stored progress. |
+An active grenade sits on one guide and disappears after its short timer. The first pizza's grenade cannot become active before **Go**. A swipe that hits it is judged by the server's clock. Stale pizza actions, canceled gestures, preparation, and an expired run do not cause grenade damage.
 
-All four assessment CRUD actions operate on **player records**.
+## Your personal-best result
+
+The game shows **“Beat your best: N”**, where N is your best score when the run began. The API reports:
+
+- **Won:** your final score is **strictly higher** than that starting best.
+- **Lost:** your final score is equal to or below it.
+
+Beating the record during play does not end the run. Later penalties can reduce the final score. For example, if your best was 40, reaching 50 and then losing 10 points leaves 40: that tied final score does not beat the record.
+
+The completed-pizza count is a separate statistic. `bestScore` and `bestPizzaCount` update independently after a run finishes; completing more pizzas does not automatically mean a higher score after penalties.
 
 ## Open and run in GitHub Codespaces
 
-1. Open [Allspark1983/Pizza-slice-challenge](https://github.com/Allspark1983/Pizza-slice-challenge) and select **`main`**.
-2. Choose **Code → Codespaces → Create codespace on main**. Wait for the editor and terminal.
-3. Type this command into the terminal and press Enter:
+1. Open [Allspark1983/Pizza-slice-challenge](https://github.com/Allspark1983/Pizza-slice-challenge) on **`main`**.
+2. Choose **Code → Codespaces → Create codespace on main** and wait for the editor.
+3. Type this into the terminal and press Enter:
 
    ```text
    npm start
    ```
 
-4. Leave that terminal running. Open **Ports**, find **3000**, and choose **Open in Browser**.
+4. Leave the terminal running. Open **Ports → 3000 → Open in Browser**.
 
-Keep the forwarded port **Private**, since the app has no sign-in system. **No `npm install` is needed**: the project uses built-in Node.js modules and browser features. It requires **Node.js 22 or newer**; the included development-container configuration sets up the intended Codespaces environment.
+Keep the forwarded port **Private**, since the app has no sign-in system. **No `npm install` is needed.** The project uses built-in Node.js modules and browser features. It requires **Node.js 22 or newer**, supplied by the included Codespaces configuration. Press **Ctrl+C** to stop the server.
 
-Press **Ctrl+C** in the terminal to stop the server.
+### Update your existing Codespace
 
-### Run from a ZIP on your computer
-
-Install Node.js 22 or newer, extract the project ZIP, and open a terminal in the folder containing `package.json` and `server.js`. Run `npm start`, then visit `http://localhost:3000`. On GitHub, **Code → Download ZIP** on `main` provides a source copy. Extract it before running the files.
-
-### Update this project's existing Codespace
-
-Stop the server with **Ctrl+C**. Run `git status` and confirm that you are in **pizza-slice-challenge**, on **`main`**, with a clean working tree. Preserve and review any local changes before pulling.
+Stop the server with **Ctrl+C**. Run `git status` and confirm you are in this repository, on **`main`**, with a clean working tree. Preserve and review any local changes before pulling.
 
 With a clean working tree, run:
 
@@ -74,87 +81,88 @@ git pull --ff-only origin main
 npm start
 ```
 
-Refresh the browser. If the pull cannot fast-forward, review the branch difference before continuing. The ignored `.data/game.json` remains in the same Codespace.
+Refresh the browser. If the pull cannot fast-forward, review the branch difference before continuing. Version 3 starts fresh Rush profiles in `.data/rush.json`; the earlier `.data/game.json` is retained separately.
 
-## Files and their jobs
+### Run a ZIP locally
 
-| File or folder | Purpose |
-| --- | --- |
-| `index.html` | Player form, pizza board, controls, countdown, verdict, and leaderboards. |
-| `style.css` | Layout, colours, guides, feedback, and mobile styling. |
-| `script.js` | Pointer/keyboard input, drawing, rendering, and asynchronous API requests. |
-| `game.js` | Rule validation, round state, time checks, cut geometry, and leaderboard sorting. |
-| `game-rules.json` | Pizza sizes/slices, 3,000 ms preparation, and a 20,000 ms playing limit. |
-| `server.js` | REST routes, server-chosen rounds, validation, and game-state storage. |
-| `package.json` | `npm start`, `npm test`, and `npm run check` commands. |
-| `test/` | Automated game-rule and API tests. |
-| `ASSESSMENT.md` | Requirement mapping, manual checks, and oral practice. |
-| `.devcontainer/devcontainer.json` | The Codespaces development environment. |
-| `.gitignore` | Excludes runtime data and other files that should not be committed. |
+With Node.js 22 or newer installed, extract the source ZIP and open a terminal in the folder containing `package.json` and `server.js`. Run `npm start`, then open `http://localhost:3000`. GitHub's **Code → Download ZIP** provides the files from the selected branch.
 
-For learning, read **`index.html` → `style.css` → `script.js` → `game.js` → `server.js`**. Follow one user action through the files before studying another.
+## Profiles provide the assignment's CRUD actions
 
-In `script.js`, `handlePlayerSubmit` handles the player form. `handlePointerDown`, `handlePointerMove`, and `handlePointerUp` capture drawing; `submitKeyboardCut` converts the chosen angle into a stroke. `performRoundAction` handles round API actions, while `renderClock` updates the countdown and controls and `renderPizza` displays the pizza and guides. The leaderboard uses `renderPlayers(sortPlayersByBestTime(players, leaderboardSize))`.
+Profiles sit in a secondary panel so the solo game remains the main screen.
 
-The server validates `game-rules.json` at startup and serves that same settings snapshot to the browser. After editing game settings, restart the server to apply them consistently. Existing saved rounds retain their original preparation period and deadline.
-
-## How the REST API decides the result
-
-The browser sends **actions**: create a round or submit a cut's start and end points. The server chooses the pizza and guides, records the round's start/deadline, checks geometry and time, and returns **`{ round, player, feedback }`**. The browser displays that response.
-
-The browser does not submit its own win, loss, finish time, or pizza size. Player PATCH requests edit the name only; they cannot award wins or change best times. A returned round's `status` is `countdown`, `playing`, `won`, or `lost`.
-
-### Routes
-
-Replace `:id` with an actual player or round ID, as appropriate.
-
-| Method and path | Purpose | Request body |
+| CRUD | User action | API |
 | --- | --- | --- |
-| `GET /api/players` | Read players and progress. | None. |
-| `POST /api/players` | Add a player. | `{ "name": "Adzan" }` |
-| `PATCH /api/players/:id` | Edit a name. | `{ "name": "Adzan M" }` |
-| `DELETE /api/players/:id` | Delete a player. | None. |
-| `POST /api/rounds` | Start a round or resume the player's active round. | `{ "playerId": "player-id", "requestId": "unique-start-request-id" }` |
-| `GET /api/rounds/:id` | Read the server's current round state and verdict. | None. |
-| `POST /api/rounds/:id/cuts` | Submit a cut for judging. | `requestId`, `start: { x, y }`, and `end: { x, y }`. |
+| **Create** | Add a profile. | `POST /api/players` |
+| **Read** | View saved profiles and personal records. | `GET /api/players` |
+| **Update** | Rename a profile. | `PATCH /api/players/:id` |
+| **Delete** | Delete a profile and its associated runs. | `DELETE /api/players/:id` |
 
-Every new start/cut action uses a unique **request ID**. A retry reuses that ID and the original payload so that a request is not applied twice. Starting again for a player with an active round resumes it instead of granting another deadline. The server retains all active rounds and the latest **100 finished rounds**; retry protection applies while the relevant history is retained.
+A public profile has `id`, `name`, `runsPlayed`, `runsWon`, `runsLost`, `bestScore`, `bestPizzaCount`, and `totalPizzasCompleted`. Results and totals are settled once when a run ends. Name edits preserve the profile's identity and progress.
 
-Coordinates use the pizza centre as **(0, 0)** and its radius as **1**. Point values must be finite numbers from **−3 to 3**. Names are trimmed and contain **1–24 characters**; request IDs contain **1–100 characters** after trimming.
+## How the REST API works
 
-A new round returns **201**; a resumed/retried round, round read, or cut response returns **200**. Errors return `{ "error": "message" }`: **400** for invalid input, **404** for a missing resource, and **409** for a duplicate name, a start-request ID reused for another player, or a retained cut-request ID reused on another round. The API also bounds body size and request history; exceeding the round's 500 retained request IDs returns **429**.
+The browser sends actions and displays the API's **`{ run, player, feedback }`** response. The server chooses pizzas and hazards, checks time and geometry, applies score changes, and decides the final result. The browser cannot submit its own score, outcome, pizza size, or time.
 
-### A small cut-request example
+| Method and path | Request body | Purpose |
+| --- | --- | --- |
+| `GET /api/players` | None. | Read solo profiles. |
+| `POST /api/players` | `{ "name": "Adzan" }` | Add a profile. |
+| `PATCH /api/players/:id` | `{ "name": "Adzan M" }` | Rename a profile. |
+| `DELETE /api/players/:id` | None. | Delete a profile and its runs. |
+| `POST /api/runs` | `{ "playerId": "player-id", "requestId": "unique-start-id" }` | Start or resume an active run. |
+| `GET /api/runs/:id` | None. | Read the current run and reconcile its deadline. |
+| `POST /api/runs/:id/cuts` | `requestId`, `pizzaId`, `start: { x, y }`, `end: { x, y }`. | Submit a stroke for the current pizza. |
 
-Here, `start` and `end` are coordinate objects produced by drawing or the angle controls. The app handles the complete interaction and error flow.
+The **request ID** identifies an action for safe retry. The **pizza ID** identifies which pizza that action belongs to. A delayed cut for a replaced pizza is ignored, so it cannot damage the next pizza. Retry an uncertain action using the identical request ID, pizza ID, and body.
+
+Coordinates use centre **(0, 0)** and pizza radius **1**. Points are finite numbers from −3 to 3. Names contain 1–24 characters after trimming; request IDs contain 1–100. The server retains all active runs and the latest 100 finished runs, with up to 2,000 retained start/cut request IDs per run. Retry protection applies while that history remains. Reaching the request cap does not stop the clock or prevent final settlement.
+
+### Small request example
 
 ```javascript
-async function sendCutExample(roundId, requestId, start, end) {
-  const response = await fetch(`/api/rounds/${roundId}/cuts`, {
+async function sendCutExample(runId, pizzaId, requestId, start, end) {
+  const response = await fetch(`/api/runs/${runId}/cuts`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ requestId, start, end })
+    body: JSON.stringify({ requestId, pizzaId, start, end })
   });
 
-  if (!response.ok) {
-    throw new Error("The cut could not be checked.");
-  }
-
+  if (!response.ok) throw new Error("The action could not be checked.");
   return response.json();
 }
 ```
 
-`JSON.stringify()` turns an action object into JSON text. `response.json()` reads the server's response as JavaScript data, including the round, player progress, and feedback to display.
+`JSON.stringify()` converts the action to JSON text; `response.json()` reads the server's JSON as JavaScript data. The app contains the complete input, recovery, and rendering flow.
 
-## Where data is saved
+## Timing, recovery, and storage
 
-The server stores **players and rounds together in `.data/game.json`**. Updates are saved atomically, so the related round state and player result are written together. This runtime file is excluded from Git commits.
+The three-second preparation is outside the minute. Completing or spoiling a pizza never restarts the clock. The server advances time **before** accepting a cut, so actions processed at or after the deadline cannot change the score. Network and server-queue delays affect when an action is processed.
 
-This separate project starts with **fresh player data**. It does not automatically import the earlier Pizza Collector leaderboard. In the same Codespace, saved players, results, and rounds survive a server restart. An active round retains its original deadline; time spent away still counts.
+Refreshing, switching tabs, or restarting the server does not pause or reset the saved run. Starting again for the same profile resumes its active run. After a connection problem, retry/recover the existing action and read the server's result. Profile changes are disabled while a run or uncertain action is active.
 
-Git commits save source code, not `.data/game.json`. A different Codespace has separate data. Download that file before deleting a Codespace if you want to keep its game records.
+Players and runs are saved together in **`.data/rush.json`** through atomic updates. Version 3 does not overwrite or silently migrate the older **`.data/game.json`**. New Rush profiles and records begin fresh; the older game's file stays separate.
 
-## Checks and common issues
+Runtime data is excluded from Git. The same Codespace retains its data across restarts; another Codespace has separate records. Download the relevant data file before deleting a Codespace if you want to keep those records. This is a casual solo game, not an anti-cheat system.
+
+## Files to read while learning
+
+| File | What it does |
+| --- | --- |
+| `index.html` | Game board, score, timer, controls, and profile panel. |
+| `style.css` | Layout, feedback, hazard appearance, and reduced-motion/mobile styling. |
+| `script.js` | Input, REST requests, recovery, and rendering server state. |
+| `game.js` | Run rules, geometry, score penalties, grenade collision, and difficulty. |
+| `game-rules.json` | 60,000 ms run, 3,000 ms preparation, and the three pizza mappings. |
+| `server.js` | API routes, validation, atomic storage, and exactly-once result settlement. |
+| `test/` | Automated game-rule and API/storage checks. |
+| `ASSESSMENT.md` | Requirement mapping, browser checklist, and explanation practice. |
+
+`SCORE_RULES` and `DIFFICULTY_LEVELS` are constants in `game.js`. The UI can read them for labels; the API awards points. The server loads and validates JSON settings at startup, so restart it after a permitted configuration change. Existing runs keep their rules and deadline snapshot.
+
+## Verification and later code changes
+
+**Version 3 verification:** `npm run check` passes and `npm test` passes **42 of 42 tests**: **25 shared game-rule tests and 17 API/storage tests**, with **zero failures and zero skipped tests**. An HTTP smoke check also passes. Static checks confirm the interface's DOM/ARIA targets, local assets, and imported game helpers are present. Browser playtesting and layout checks have not been performed here; automated and static checks do not replace those observations.
 
 Run these commands from the project folder:
 
@@ -163,35 +171,13 @@ npm run check
 npm test
 ```
 
-**Slice Challenge validation:** `npm run check` passed with exit code 0. `npm test` passed all **29 tests**: **15 shared game-rule tests and 14 API/storage tests**, with **0 failures and 0 skipped**. Source checks also resolved all **55 DOM selectors** without duplicate IDs or broken labels/ARIA references. Browser gameplay, pointer/touch controls, keyboard controls, and mobile rendering have **not been checked manually here**.
-
-| What you see | What to check |
-| --- | --- |
-| The page or API does not load. | Confirm `npm start` is running and open forwarded port 3000. |
-| `package.json` cannot be found. | Use the folder containing `package.json`. |
-| The port is already in use. | Stop the earlier server with Ctrl+C and start the intended project. |
-| A cut is ignored. | Check that playing has started and the stroke crosses the whole pizza. |
-| A complete cut loses. | Follow a guide through the centre and finish before the server deadline. |
-| A request fails. | Restore the connection, retry the same action with its original request ID, and check the server's current state. |
-| Refreshing does not provide another 20 seconds. | The existing round retains its server-recorded deadline. |
-| Opening `index.html` directly does not run the game. | Start Node and use its URL. GitHub Pages alone cannot run this API. |
-
-## Save later changes to GitHub
-
-From this repository's `main` branch, check and save your changes:
+After editing code, inspect and save the intended changes:
 
 ```text
-npm run check
-npm test
 git status
 git add .
-git commit -m "Improve Pizza Slice Challenge"
+git commit -m "Improve Pizza Slice Rush Version 3"
 git push origin main
 ```
 
-Read `git status` before committing to confirm the branch and changed files. If nothing changed, no new commit is needed. GitHub handles authentication in Codespaces.
-
-## Useful GitHub documentation
-
-- [Set up a Node.js project for Codespaces](https://docs.github.com/en/codespaces/setting-up-your-project-for-codespaces/adding-a-dev-container-configuration/setting-up-your-nodejs-project-for-codespaces)
-- [Forward ports in a Codespace](https://docs.github.com/en/codespaces/developing-in-a-codespace/forwarding-ports-in-your-codespace)
+Use the running Node server's URL to play. Opening `index.html` directly or using GitHub Pages alone cannot run this API. If port 3000 is busy, stop the earlier server with Ctrl+C before starting this one.

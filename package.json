@@ -1,8 +1,8 @@
 {
   "name": "pizza-slice-challenge",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "private": true,
-  "description": "Cut random whole pizzas into equal slices, with player CRUD and server-judged REST results.",
+  "description": "Version 3: a solo 60-second pizza slicing rush with rising difficulty, grenade hazards, player CRUD, and REST scoring.",
   "type": "module",
   "engines": {
     "node": ">=22"
