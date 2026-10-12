@@ -5,6 +5,27 @@ import { BATCH_ENTRY_MS, BATCH_ENTRY_DISTANCE, entranceOffset, clipStrokeToBound
 const elements = {
   connectionStatus: document.querySelector('#connection-status'),
   gamePanel: document.querySelector('.game-panel'),
+  setupScreen: document.querySelector('#setup-screen'),
+  startForm: document.querySelector('#start-form'),
+  entryPlayerName: document.querySelector('#entry-player-name'),
+  savedPlayerField: document.querySelector('#saved-player-field'),
+  savedPlayerSelect: document.querySelector('#saved-player-select'),
+  beginGame: document.querySelector('#begin-game'),
+  setupMessage: document.querySelector('#setup-message'),
+  resultScore: document.querySelector('#result-score'),
+  leaderboardRows: document.querySelector('#leaderboard-rows'),
+  leaderboardScroll: document.querySelector('#leaderboard-scroll'),
+  leaderboardCount: document.querySelector('#leaderboard-count'),
+  leaderboardMessage: document.querySelector('#leaderboard-message'),
+  leaderboardOwnPlace: document.querySelector('#leaderboard-own-place'),
+  retryLeaderboard: document.querySelector('#retry-leaderboard'),
+  profilesDialog: document.querySelector('#profiles-dialog'),
+  openProfiles: document.querySelector('#open-profiles'),
+  closeProfiles: document.querySelector('#close-profiles'),
+  helpDialog: document.querySelector('#help-dialog'),
+  openHelp: document.querySelector('#open-help'),
+  closeHelp: document.querySelector('#close-help'),
+  closeKeyboard: document.querySelector('#close-keyboard'),
   playerSelect: document.querySelector('#player-select'),
   editProfile: document.querySelector('#edit-profile'),
   deleteProfile: document.querySelector('#delete-profile'),
@@ -124,6 +145,13 @@ let motionWaveId = null;
 let motionOffset = 0;
 let drawnMotionOffset = 0;
 let frozenMotion = null;
+let setupOpen = true;
+let pendingProfileName = null;
+let leaderboard = { status: 'idle', entries: [], totalPlayers: 0, error: '' };
+let leaderboardGeneration = 0;
+let leaderboardRunId = null;
+let renderedLeaderboardKey = '';
+let renderedSavedPlayerKey = '';
 
 function setText(element, value) {
   const text = String(value);
@@ -217,7 +245,11 @@ function readRecovery() {
     activePlayerId = validID(saved.playerId) ? saved.playerId : null;
     knownRunId = validID(saved.runId) ? saved.runId : null;
     pendingAction = validStoredAction(saved.pendingAction) ? saved.pendingAction : null;
+    pendingProfileName = typeof saved.pendingProfileName === 'string' &&
+      saved.pendingProfileName.trim().length > 0 && saved.pendingProfileName.trim().length <= 24
+      ? saved.pendingProfileName.trim() : null;
     if (pendingAction) {
+      pendingProfileName = null;
       activePlayerId = pendingAction.playerId;
       if (pendingAction.kind !== 'start') knownRunId = pendingAction.runId;
     }
@@ -229,7 +261,7 @@ function readRecovery() {
 function saveRecovery() {
   try {
     sessionStorage.setItem(recoveryKey, JSON.stringify({
-      playerId: activePlayerId, runId: knownRunId, pendingAction: pendingAction
+      playerId: activePlayerId, runId: knownRunId, pendingAction: pendingAction, pendingProfileName: pendingProfileName
     }));
   } catch {
     // The server still keeps the run and its original deadline.
@@ -249,6 +281,8 @@ function clearFeedback() {
 }
 
 function clearRun() {
+  setupOpen = true;
+  invalidateLeaderboard();
   stopClock();
   cancelPointerStroke();
   clearFeedback();
@@ -334,6 +368,8 @@ function applyEnvelope(envelope, action) {
   }
   cancelPointerStroke();
   run = envelope.run;
+  setupOpen = false;
+  pendingProfileName = null;
   knownRunId = run.id;
   activePlayerId = run.playerId;
   clockAnchor = { serverTime: run.serverTime, receivedAt: performance.now() };
@@ -365,6 +401,8 @@ function applyEnvelope(envelope, action) {
   run.lastEvents.forEach((event) => seenEventIds.add(event.id));
   if (previousRun?.id === run.id && freshEvents.length > 0) showPizzaFeedback(freshEvents, outcomeOffset);
   saveRecovery();
+  // Only a confirmed terminal run opens the leaderboard, never the local clock.
+  if (isFinished() && leaderboardRunId !== run.id) void loadLeaderboard();
 }
 
 async function performRunAction(action) {
@@ -397,10 +435,11 @@ async function performRunAction(action) {
     saveRecovery();
   } finally {
     busy = false;
+    if (!run && !pendingAction) setupOpen = true;
     releaseBatchMotion();
     renderInterface();
     if (pendingAction) elements.retryAction.focus({ preventScroll: true });
-    else if (isFinished()) elements.startRun.focus({ preventScroll: true });
+    else if (isFinished() && !setupOpen) elements.startRun.focus({ preventScroll: true });
     else if (action.origin === 'keyboard' && run && !isFinished()) elements.pizzaBoard.focus({ preventScroll: true });
     else if (action.kind === 'start' && run) elements.pizzaBoard.focus({ preventScroll: true });
     else if (previousFocus === elements.bladeAngle && !elements.bladeAngle.disabled) elements.bladeAngle.focus({ preventScroll: true });
@@ -510,7 +549,7 @@ function renderClock() {
   let overlay = '';
   if (!loaded) overlay = requestFailure ? 'Reload & recover to reconnect.' : 'Getting the arcade ready…';
   else if (pendingAction && requestFailure) overlay = 'Waiting for confirmation · use Retry';
-  else if (!run) overlay = busy ? 'Preparing your run…' : (getActivePlayer() ? 'Ready? Start your one-minute rush.' : 'Create a profile below to get started.');
+  else if (!run) overlay = busy ? 'Preparing your run…' : 'Enter your name to start your one-minute rush.';
   else if (isFinished()) overlay = run.status === 'won' ? 'New personal best!' : 'Minute complete · try again';
   else if (countdown && remaining > 0) overlay = 'Ready in ' + Math.ceil(remaining / 1000);
   else if (key) overlay = countdown ? 'Starting the run…' : (finalBoundary ? 'Checking final result…' : 'Checking the next batch…');
@@ -531,6 +570,7 @@ function renderClock() {
   }
   const interactive = canCut();
   elements.pizzaBoard.setAttribute('aria-disabled', String(!interactive));
+  elements.pizzaBoard.tabIndex = run && !isFinished() ? 0 : -1;
   elements.cutAngle.disabled = !interactive;
   elements.bladeAngle.disabled = !canAim();
   elements.targetPizza.disabled = !canAim();
@@ -626,19 +666,16 @@ function renderProfiles(profileList) {
       option.textContent = player.name;
       return option;
     });
-    if (options.length === 0) {
-      const empty = document.createElement('option');
-      empty.value = '';
-      empty.textContent = 'Create a profile first';
-      options.push(empty);
-    }
-    elements.playerSelect.replaceChildren(...options);
+    const empty = document.createElement('option');
+    empty.value = '';
+    empty.textContent = options.length ? 'Choose a saved player' : 'Create a player first';
+    elements.playerSelect.replaceChildren(empty, ...options);
     renderedProfileKey = key;
   }
   elements.playerSelect.value = activePlayerId || '';
   const player = getActivePlayer();
-  const locked = !loaded || busy || isRunLocked();
-  elements.playerSelect.disabled = locked || !player;
+  const locked = !loaded || busy || isRunLocked() || Boolean(pendingProfileName);
+  elements.playerSelect.disabled = locked || profileList.length === 0;
   elements.editProfile.disabled = locked || !player;
   elements.deleteProfile.disabled = locked || !player;
   setText(elements.profileBestScore, player?.bestScore || 0);
@@ -653,9 +690,9 @@ function renderProfiles(profileList) {
   elements.playerSubmit.disabled = locked;
   elements.cancelEdit.disabled = locked;
   elements.cancelEdit.hidden = !editingPlayerId;
-  setText(elements.playerSubmit, editingPlayerId ? 'Save name' : 'Add profile');
-  setText(elements.playerFormTitle, editingPlayerId ? 'Rename profile' : 'Add a profile');
-  setText(elements.profileEditorTitle, editingPlayerId ? 'Rename profile' : 'Add a profile');
+  setText(elements.playerSubmit, editingPlayerId ? 'Save name' : 'Add player');
+  setText(elements.playerFormTitle, editingPlayerId ? 'Rename player' : 'Add a player');
+  setText(elements.profileEditorTitle, editingPlayerId ? 'Rename player' : 'Add a player');
   elements.confirmDelete.disabled = busy;
   elements.cancelDelete.disabled = busy;
 }
@@ -740,7 +777,7 @@ function renderPizzas() {
     pizza.pizzaSize + '-inch pizza, ' + pizzaPosition(pizza) + '. ' + pizza.requiredSlices + ' slices needed; ' +
     pizza.cutAngles.length + ' of ' + pizza.requiredCuts + ' cuts made.' +
     (pizza.cutAngles.length ? ' Cuts made at ' + pizza.cutAngles.map((angle) => Math.round(angle) + ' degrees').join(', ') + '.' : ' Your first cut sets the direction.')
-  ).join(' ') : 'Pizza board. ' + (run && !isFinished() ? 'Wait for the next batch.' : 'Create or choose a profile, then start a run.'));
+  ).join(' ') : 'Pizza board. ' + (run && !isFinished() ? 'Wait for the next batch.' : 'Enter your name, then start a run.'));
   renderTargets(pizzas);
   renderedPizzas = [...pizzas];
   renderedPizzaKey = signature;
@@ -768,37 +805,165 @@ function renderRules() {
   }));
 }
 
+function renderSetup() {
+  const profileList = sortProfilesByName(players);
+  const key = JSON.stringify(profileList.map((player) => [player.id, player.name]));
+  if (key !== renderedSavedPlayerKey) {
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Choose a saved player';
+    const options = profileList.map((player) => {
+      const option = document.createElement('option');
+      option.value = player.id;
+      option.textContent = player.name;
+      return option;
+    });
+    elements.savedPlayerSelect.replaceChildren(placeholder, ...options);
+    renderedSavedPlayerKey = key;
+  }
+  elements.savedPlayerField.hidden = profileList.length === 0;
+  const matching = findPlayerByName(elements.entryPlayerName.value);
+  elements.savedPlayerSelect.value = matching?.id || '';
+  elements.setupScreen.hidden = !setupOpen || isRunLocked();
+  const locked = !loaded || busy || isRunLocked();
+  elements.entryPlayerName.disabled = locked || Boolean(pendingProfileName);
+  elements.savedPlayerSelect.disabled = locked || Boolean(pendingProfileName);
+  elements.beginGame.disabled = locked || Boolean(editingPlayerId);
+  setText(elements.beginGame, pendingProfileName ? 'Check player & start' : 'Start 60-second rush →');
+  elements.openProfiles.disabled = locked || Boolean(pendingProfileName);
+  elements.openHelp.disabled = busy || isRunLocked();
+  elements.closeProfiles.disabled = busy;
+  elements.keyboardControls.hidden = !run || isFinished();
+  if (!run || isFinished()) elements.keyboardControls.open = false;
+}
+
 function renderInterface() {
   // Function composition: the helper's returned array becomes renderer input.
   renderProfiles(sortProfilesByName(players));
+  renderSetup();
   const player = getActivePlayer();
-  setText(elements.activePlayerName, player?.name || 'Choose a profile');
+  const setupPlayer = findPlayerByName(elements.entryPlayerName.value);
+  const showingSetup = setupOpen && !isRunLocked();
+  setText(elements.activePlayerName, showingSetup
+    ? (setupPlayer?.name || elements.entryPlayerName.value.trim() || 'Your name here')
+    : (player?.name || 'Your name here'));
   setText(elements.scoreDisplay, run?.score || 0);
-  setText(elements.bestToBeat, run ? run.bestBefore : (player?.bestScore || 0));
+  setText(elements.bestToBeat, run ? run.bestBefore : (showingSetup ? setupPlayer?.bestScore || 0 : player?.bestScore || 0));
   setText(elements.pizzasCompleted, run?.pizzasCompleted || 0);
   setText(elements.pizzasSpoiled, run?.pizzasSpoiled || 0);
   setText(elements.grenadesHit, run?.grenadesHit || 0);
   setText(elements.pizzasMissed, run?.pizzasMissed || 0);
-  elements.startRun.disabled = !loaded || busy || !player || isRunLocked() || Boolean(editingPlayerId);
-  setText(elements.startRun, isFinished() ? 'Play another minute' : 'Start run');
-  elements.createProfileShortcut.hidden = Boolean(player);
-  elements.createProfileShortcut.disabled = !loaded || busy;
+  const startLocked = !loaded || busy || !player || isRunLocked() || Boolean(editingPlayerId) || Boolean(pendingProfileName);
+  elements.startRun.disabled = startLocked;
+  setText(elements.startRun, 'Play again');
+  elements.createProfileShortcut.disabled = startLocked;
   elements.retryAction.hidden = !pendingAction || busy;
   elements.retryAction.disabled = busy;
   setText(elements.retryAction, pendingAction?.kind === 'cut' ? 'Retry cut' : (pendingAction?.kind === 'start' ? 'Retry start' : 'Retry check'));
   elements.reloadPlayers.hidden = loaded && !requestFailure;
   elements.reloadPlayers.disabled = busy;
-  elements.resultBanner.hidden = !isFinished();
+  elements.resultBanner.hidden = !isFinished() || setupOpen;
   if (isFinished()) {
     elements.resultBanner.dataset.state = run.status;
-    setText(elements.resultTitle, run.status === 'won' ? 'New personal best!' : 'Time’s up. Go again?');
-    setText(elements.resultDetail, run.score + ' points · ' + run.pizzasCompleted + ' pizzas completed. ' +
-      (run.status === 'won' ? 'You beat your starting best of ' + run.bestBefore + '.' :
-        'Beat your starting best of ' + run.bestBefore + ' to win. Ties count as a loss.'));
+    setText(elements.resultTitle, (player?.name || 'Player') + (run.status === 'won' ? ', new personal best!' : ', time’s up!'));
+    setText(elements.resultScore, run.score);
+    setText(elements.resultDetail, run.pizzasCompleted + ' pizzas completed · ' +
+      (run.status === 'won' ? 'You win! Your score beat ' + run.bestBefore + '.' :
+        'This run is a loss. Beat ' + run.bestBefore + ' to win; ties count as a loss.'));
   }
+  renderLeaderboard();
   renderPizzas();
   renderClock();
   renderBlade();
+}
+
+// Rankings are fetched separately; replay is available even if this read fails.
+function invalidateLeaderboard() {
+  leaderboardGeneration += 1;
+  leaderboardRunId = null;
+  leaderboard = { status: 'idle', entries: [], totalPlayers: 0, error: '' };
+  renderedLeaderboardKey = '';
+}
+
+function isValidLeaderboard(value) {
+  return value && Array.isArray(value.entries) && isCount(value.totalPlayers) &&
+    value.totalPlayers === value.entries.length &&
+    new Set(value.entries.map((entry) => entry?.playerId)).size === value.entries.length &&
+    value.entries.every((entry, index) => entry && entry.rank === index + 1 && validID(entry.playerId) &&
+      typeof entry.name === 'string' && entry.name.trim().length > 0 && entry.name.length <= 24 &&
+      isCount(entry.bestScore) && isCount(entry.bestPizzaCount) && isCount(entry.runsPlayed) && entry.runsPlayed > 0);
+}
+
+async function loadLeaderboard() {
+  if (!isFinished()) return;
+  const targetRunId = run.id;
+  const generation = ++leaderboardGeneration;
+  leaderboardRunId = targetRunId;
+  leaderboard = { status: 'loading', entries: [], totalPlayers: 0, error: '' };
+  renderLeaderboard();
+  try {
+    const result = await requestJSON('/api/leaderboard');
+    if (!isValidLeaderboard(result)) throw new Error('The leaderboard could not be read.');
+    if (generation !== leaderboardGeneration || run?.id !== targetRunId || !isFinished()) return;
+    leaderboard = { status: 'ready', entries: result.entries, totalPlayers: result.totalPlayers, error: '' };
+  } catch (error) {
+    if (generation !== leaderboardGeneration || run?.id !== targetRunId || !isFinished()) return;
+    leaderboard = { status: 'error', entries: [], totalPlayers: 0, error: error.message };
+  }
+  renderLeaderboard();
+}
+
+function renderLeaderboard() {
+  const key = JSON.stringify([leaderboard, activePlayerId]);
+  if (key === renderedLeaderboardKey) return;
+  renderedLeaderboardKey = key;
+  elements.leaderboardRows.replaceChildren();
+  elements.leaderboardOwnPlace.hidden = true;
+  elements.leaderboardOwnPlace.textContent = '';
+  elements.leaderboardCount.textContent = '';
+  elements.leaderboardScroll.hidden = leaderboard.status !== 'ready' || !leaderboard.entries.length;
+  elements.retryLeaderboard.hidden = leaderboard.status !== 'error';
+  if (leaderboard.status === 'loading') {
+    setMessage(elements.leaderboardMessage, 'Loading the leaderboard…');
+    return;
+  }
+  if (leaderboard.status === 'error') {
+    setMessage(elements.leaderboardMessage, leaderboard.error + ' Your run is saved. Retry the leaderboard or play again.', 'error');
+    return;
+  }
+  if (leaderboard.status !== 'ready') {
+    setMessage(elements.leaderboardMessage, '');
+    return;
+  }
+  const shown = leaderboard.entries.slice(0, 10);
+  setText(elements.leaderboardCount, leaderboard.totalPlayers + (leaderboard.totalPlayers === 1 ? ' player' : ' players'));
+  setMessage(elements.leaderboardMessage, shown.length ? '' : 'No completed runs yet.');
+  elements.leaderboardRows.replaceChildren(...shown.map((entry) => {
+    const row = document.createElement('tr');
+    const rank = document.createElement('td');
+    const name = document.createElement('td');
+    const score = document.createElement('td');
+    const pizzas = document.createElement('td');
+    rank.textContent = '#' + entry.rank;
+    name.textContent = entry.name;
+    score.textContent = entry.bestScore;
+    pizzas.textContent = entry.bestPizzaCount;
+    if (entry.playerId === activePlayerId) {
+      row.classList.add('is-player');
+      const marker = document.createElement('span');
+      marker.className = 'player-marker';
+      marker.textContent = 'You';
+      name.append(marker);
+    }
+    row.append(rank, name, score, pizzas);
+    return row;
+  }));
+  const own = leaderboard.entries.find((entry) => entry.playerId === activePlayerId);
+  if (own && !shown.some((entry) => entry.playerId === own.playerId)) {
+    elements.leaderboardOwnPlace.hidden = false;
+    elements.leaderboardOwnPlace.textContent = 'Your place: #' + own.rank + ' · ' + own.name +
+      ' · ' + own.bestScore + ' best points · ' + own.bestPizzaCount + ' pizzas';
+  }
 }
 
 // 7. FEEDBACK: event IDs prevent replays when the API returns the same history.
@@ -971,14 +1136,139 @@ function handleBoardKey(event) {
   } else if (event.key === 'Enter' || event.key === ' ') submitKeyboardCut();
 }
 
-function startRun() {
-  if (!loaded || busy || !getActivePlayer() || isRunLocked() || editingPlayerId) return;
+async function startRun() {
+  if (!loaded || busy || !getActivePlayer() || isRunLocked() || editingPlayerId || pendingProfileName) return;
   clearRun();
-  elements.gamePanel.scrollIntoView({ block: 'start' });
-  void performRunAction({ kind: 'start', playerId: activePlayerId, requestId: crypto.randomUUID(), origin: 'start' });
+  setupOpen = false;
+  elements.profilesDialog.close();
+  elements.helpDialog.close();
+  elements.keyboardControls.open = false;
+  await performRunAction({ kind: 'start', playerId: activePlayerId, requestId: crypto.randomUUID(), origin: 'start' });
 }
 
-// 9. PROFILE CRUD: records are read-only here; PATCH changes a name only.
+// 9. NAME ENTRY + PROFILE CRUD: names identify saved players; scores are read-only.
+function findPlayerByName(name) {
+  const normalised = String(name).trim().toLowerCase();
+  return players.find((player) => player.name.toLowerCase() === normalised);
+}
+
+async function readSavedPlayers() {
+  const savedPlayers = await requestJSON('/api/players');
+  if (!Array.isArray(savedPlayers) || !savedPlayers.every(isValidPlayer)) throw new Error('Your saved players could not be read.');
+  return savedPlayers;
+}
+
+function rememberPlayer(player) {
+  players = players.some((item) => item.id === player.id)
+    ? players.map((item) => item.id === player.id ? player : item) : [...players, player];
+}
+
+async function getOrCreatePlayer(name, selectedID = null) {
+  // Re-read first: another tab may have created or renamed this saved player.
+  players = await readSavedPlayers();
+  // A chosen saved player follows its ID even if a rename reply was lost.
+  const existing = (selectedID && players.find((player) => player.id === selectedID)) || findPlayerByName(name);
+  if (existing) {
+    pendingProfileName = null;
+    saveRecovery();
+    return existing;
+  }
+  // A lost POST reply is reconciled by the same name. The server also enforces
+  // case-insensitive name uniqueness, so retrying cannot duplicate the player.
+  pendingProfileName = name;
+  saveRecovery();
+  try {
+    const player = await requestJSON('/api/players', { method: 'POST', body: { name: name } });
+    if (!isValidPlayer(player) || player.name.toLowerCase() !== name.toLowerCase()) {
+      throw new Error('The saved player could not be confirmed.');
+    }
+    rememberPlayer(player);
+    pendingProfileName = null;
+    saveRecovery();
+    return player;
+  } catch (error) {
+    if ([400, 405, 413].includes(error.status)) {
+      pendingProfileName = null;
+      saveRecovery();
+      throw error;
+    }
+    // Includes a duplicate-name conflict, a timeout, and a lost response.
+    try {
+      players = await readSavedPlayers();
+      const recovered = findPlayerByName(name);
+      if (recovered) {
+        pendingProfileName = null;
+        saveRecovery();
+        return recovered;
+      }
+    } catch {
+      // Keep the exact name for the next check, including across page reloads.
+    }
+    throw error;
+  }
+}
+
+function openNameEntry() {
+  if (!loaded || busy || isRunLocked() || pendingProfileName) return;
+  clearRun();
+  resetEditor();
+  setupOpen = true;
+  elements.entryPlayerName.value = '';
+  elements.entryPlayerName.removeAttribute('aria-invalid');
+  setMessage(elements.setupMessage, '');
+  setMessage(elements.gameMessage, 'Enter your name to start your one-minute rush.');
+  requestFailure = '';
+  saveRecovery();
+  renderInterface();
+  elements.entryPlayerName.focus({ preventScroll: true });
+}
+
+async function handleStartSubmit(event) {
+  event.preventDefault();
+  if (!loaded || busy || isRunLocked() || editingPlayerId) return;
+  const name = (pendingProfileName || elements.entryPlayerName.value).trim();
+  if (!name || name.length > 24) {
+    elements.entryPlayerName.setAttribute('aria-invalid', 'true');
+    setMessage(elements.setupMessage, 'Enter a name from 1 to 24 characters.', 'error');
+    elements.entryPlayerName.focus({ preventScroll: true });
+    return;
+  }
+  elements.entryPlayerName.removeAttribute('aria-invalid');
+  const selectedPlayer = getActivePlayer();
+  const selectedID = !pendingProfileName && selectedPlayer?.name.toLowerCase() === name.toLowerCase()
+    ? selectedPlayer.id : null;
+  busy = true;
+  requestFailure = '';
+  setMessage(elements.setupMessage, 'Getting your player ready…');
+  setConnection('Checking player…', 'loading');
+  renderInterface();
+  let ready = false;
+  try {
+    const player = await getOrCreatePlayer(name, selectedID);
+    clearRun();
+    activePlayerId = player.id;
+    elements.entryPlayerName.value = player.name;
+    setMessage(elements.setupMessage, '');
+    setMessage(elements.playerMessage, '');
+    saveRecovery();
+    ready = true;
+  } catch (error) {
+    requestFailure = error.message;
+    if (pendingProfileName) elements.entryPlayerName.value = pendingProfileName;
+    setMessage(elements.setupMessage, error.message + (pendingProfileName
+      ? ' Choose Check player & start to safely check this same name again.'
+      : ' Try starting again, or use Reload & recover.'), 'error');
+    setMessage(elements.gameMessage, 'Your run has not started yet.', 'error');
+    setConnection('Player not confirmed', 'error');
+  } finally {
+    busy = false;
+    renderInterface();
+  }
+  if (ready) await startRun();
+  else if (pendingProfileName) elements.beginGame.focus({ preventScroll: true });
+  else elements.entryPlayerName.focus({ preventScroll: true });
+}
+
 function resetEditor() {
   editingPlayerId = null;
   elements.playerForm.reset();
@@ -986,13 +1276,14 @@ function resetEditor() {
 }
 
 function openProfileEditor() {
+  if (!elements.profilesDialog.open) elements.profilesDialog.showModal();
   elements.profileEditor.open = true;
-  elements.playerName.focus();
+  elements.playerName.focus({ preventScroll: true });
 }
 
 async function handlePlayerSubmit(event) {
   event.preventDefault();
-  if (busy || !loaded || isRunLocked()) return;
+  if (busy || !loaded || isRunLocked() || pendingProfileName) return;
   const name = elements.playerName.value.trim();
   if (!name || name.length > 24) {
     elements.playerName.setAttribute('aria-invalid', 'true');
@@ -1001,55 +1292,73 @@ async function handlePlayerSubmit(event) {
     return;
   }
   elements.playerName.removeAttribute('aria-invalid');
-  const wasEditing = Boolean(editingPlayerId);
+  const editID = editingPlayerId;
+  // A new identity must not inherit another player's terminal run recovery.
+  if (!editID) clearRun();
+  else if (isFinished()) invalidateLeaderboard();
   busy = true;
   requestFailure = '';
-  setConnection('Saving profile…', 'loading');
+  setConnection('Saving player…', 'loading');
   renderInterface();
   try {
-    const player = await requestJSON(wasEditing ? '/api/players/' + encodeURIComponent(editingPlayerId) : '/api/players', {
-      method: wasEditing ? 'PATCH' : 'POST', body: { name: name }
-    });
-    if (!isValidPlayer(player)) throw new Error('The profile response could not be read.');
-    if (wasEditing) players = players.map((item) => item.id === player.id ? player : item);
-    else { players.push(player); activePlayerId = player.id; clearRun(); }
+    const player = editID
+      ? await requestJSON('/api/players/' + encodeURIComponent(editID), { method: 'PATCH', body: { name: name } })
+      : await getOrCreatePlayer(name);
+    if (!isValidPlayer(player) || (editID && player.id !== editID)) throw new Error('The player response could not be read.');
+    rememberPlayer(player);
+    if (!editID) {
+      clearRun();
+      activePlayerId = player.id;
+      setupOpen = true;
+    }
+    if (activePlayerId === player.id) elements.entryPlayerName.value = player.name;
     resetEditor();
     elements.profileEditor.open = false;
-    setMessage(elements.playerMessage, wasEditing ? 'Profile name updated.' : player.name + ' is ready to play.', 'success');
-    if (!wasEditing) setMessage(elements.gameMessage, 'Press Start run to reveal your first batch. Your score begins at zero.');
-    setConnection('Profile saved');
+    setMessage(elements.playerMessage, editID ? 'Player name updated.' : player.name + ' is ready to play.', 'success');
+    if (!editID) setMessage(elements.gameMessage, 'Your player is ready. Start your one-minute rush when you are ready.');
+    setConnection('Player saved');
     saveRecovery();
   } catch (error) {
     requestFailure = error.message;
-    setMessage(elements.playerMessage, error.message + ' The change was not confirmed. Reload & recover to check.', 'error');
+    if (pendingProfileName) {
+      clearRun();
+      saveRecovery();
+      setupOpen = true;
+      elements.entryPlayerName.value = pendingProfileName;
+      setMessage(elements.setupMessage, 'The player was not confirmed. Choose Check player & start to check this same name again.', 'error');
+    }
+    setMessage(elements.playerMessage, error.message + ' The change was not confirmed. Close this panel, then use Reload & recover to check.', 'error');
     setConnection('Change not confirmed', 'error');
   } finally {
     busy = false;
     renderInterface();
-    if (requestFailure) elements.playerName.focus();
-    else elements.startRun.focus();
+    if (isFinished()) void loadLeaderboard();
+    if (pendingProfileName) elements.closeProfiles.focus();
+    else if (requestFailure) elements.playerName.focus();
+    else elements.closeProfiles.focus();
   }
 }
 
 function handleProfileChange() {
-  if (busy || isRunLocked()) return;
+  if (busy || isRunLocked() || pendingProfileName) return;
   const player = players.find((item) => item.id === elements.playerSelect.value);
   if (!player) return;
   clearRun();
   activePlayerId = player.id;
+  setupOpen = true;
+  elements.entryPlayerName.value = player.name;
   requestFailure = '';
   resetEditor();
   elements.profileEditor.open = false;
   setMessage(elements.playerMessage, player.name + ' selected.');
-  setMessage(elements.gameMessage, 'Press Start run when you are ready. An unfinished run will resume its original clock.');
+  setMessage(elements.gameMessage, 'Your player is ready. Close the players panel to start your rush.');
   saveRecovery();
   renderInterface();
-  elements.startRun.focus();
 }
 
 function renameProfile() {
   const player = getActivePlayer();
-  if (!player || busy || isRunLocked()) return;
+  if (!player || busy || isRunLocked() || pendingProfileName) return;
   editingPlayerId = player.id;
   elements.playerName.value = player.name;
   setMessage(elements.playerMessage, 'Change your name, then save it.');
@@ -1060,7 +1369,7 @@ function renameProfile() {
 
 function requestDeleteProfile() {
   const player = getActivePlayer();
-  if (!player || busy || isRunLocked()) return;
+  if (!player || busy || isRunLocked() || pendingProfileName) return;
   deletingPlayerId = player.id;
   elements.deletePlayerName.textContent = player.name;
   elements.deleteDialog.showModal();
@@ -1068,46 +1377,93 @@ function requestDeleteProfile() {
 }
 
 async function deletePlayer() {
-  if (!deletingPlayerId || busy || isRunLocked()) return;
+  if (!deletingPlayerId || busy || isRunLocked() || pendingProfileName) return;
   const id = deletingPlayerId;
+  if (isFinished()) invalidateLeaderboard();
   busy = true;
   requestFailure = '';
-  setConnection('Deleting profile…', 'loading');
+  setConnection('Deleting player…', 'loading');
   renderInterface();
   try {
     await requestJSON('/api/players/' + encodeURIComponent(id), { method: 'DELETE' });
     players = players.filter((player) => player.id !== id);
     if (activePlayerId === id) {
       clearRun();
-      activePlayerId = sortProfilesByName(players)[0]?.id || null;
-      setMessage(elements.gameMessage, activePlayerId ? 'Press Start run when you are ready.' : 'Create a solo profile to begin.');
+      activePlayerId = null;
+      setupOpen = true;
+      elements.entryPlayerName.value = '';
+      setMessage(elements.gameMessage, 'Enter your name to start a new rush.');
     }
     resetEditor();
     elements.profileEditor.open = players.length === 0;
-    setMessage(elements.playerMessage, 'Profile deleted.', 'success');
-    setConnection('Profiles updated');
+    setMessage(elements.playerMessage, 'Player deleted.', 'success');
+    setConnection('Players updated');
     saveRecovery();
   } catch (error) {
     requestFailure = error.message;
-    setMessage(elements.playerMessage, error.message + ' The deletion was not confirmed. Reload & recover to check.', 'error');
+    setMessage(elements.playerMessage, error.message + ' The deletion was not confirmed. Close this panel, then use Reload & recover to check.', 'error');
     setConnection('Delete not confirmed', 'error');
   } finally {
     busy = false;
     deletingPlayerId = null;
     elements.deleteDialog.close();
     renderInterface();
-    if (getActivePlayer()) elements.playerSelect.focus();
-    else openProfileEditor();
+    if (isFinished()) void loadLeaderboard();
+    elements.closeProfiles.focus();
   }
 }
 
-// 10. EVENTS: gestures, the optional keyboard blade, forms, and recovery.
+// 10. EVENTS: name entry, gestures, optional tools, profile CRUD, and recovery.
+elements.startForm.addEventListener('submit', handleStartSubmit);
+elements.entryPlayerName.addEventListener('input', () => {
+  elements.entryPlayerName.removeAttribute('aria-invalid');
+  setMessage(elements.setupMessage, '');
+  renderInterface();
+});
+elements.savedPlayerSelect.addEventListener('change', () => {
+  if (busy || isRunLocked() || pendingProfileName) return;
+  const player = players.find((item) => item.id === elements.savedPlayerSelect.value);
+  if (!player) return;
+  activePlayerId = player.id;
+  elements.entryPlayerName.value = player.name;
+  elements.entryPlayerName.removeAttribute('aria-invalid');
+  setMessage(elements.setupMessage, '');
+  saveRecovery();
+  renderInterface();
+  elements.entryPlayerName.focus({ preventScroll: true });
+});
 elements.playerForm.addEventListener('submit', handlePlayerSubmit);
 elements.playerSelect.addEventListener('change', handleProfileChange);
 elements.editProfile.addEventListener('click', renameProfile);
 elements.deleteProfile.addEventListener('click', requestDeleteProfile);
-elements.createProfileShortcut.addEventListener('click', openProfileEditor);
-elements.startRun.addEventListener('click', startRun);
+elements.createProfileShortcut.addEventListener('click', openNameEntry);
+elements.startRun.addEventListener('click', () => { void startRun(); });
+elements.openProfiles.addEventListener('click', () => {
+  if (!loaded || busy || isRunLocked() || pendingProfileName) return;
+  elements.keyboardControls.open = false;
+  elements.profilesDialog.showModal();
+});
+elements.closeProfiles.addEventListener('click', () => { if (!busy) elements.profilesDialog.close(); });
+elements.profilesDialog.addEventListener('cancel', (event) => { if (busy) event.preventDefault(); });
+elements.profilesDialog.addEventListener('close', () => {
+  if (editingPlayerId && !busy) resetEditor();
+  renderInterface();
+  if (setupOpen && !isRunLocked() && !busy) {
+    if (pendingProfileName) elements.beginGame.focus({ preventScroll: true });
+    else elements.entryPlayerName.focus({ preventScroll: true });
+  }
+});
+elements.openHelp.addEventListener('click', () => {
+  if (busy || isRunLocked()) return;
+  elements.keyboardControls.open = false;
+  elements.helpDialog.showModal();
+});
+elements.closeHelp.addEventListener('click', () => elements.helpDialog.close());
+elements.closeKeyboard.addEventListener('click', () => {
+  elements.keyboardControls.open = false;
+  if (run && !isFinished()) elements.pizzaBoard.focus({ preventScroll: true });
+});
+elements.retryLeaderboard.addEventListener('click', () => { if (isFinished() && leaderboard.status !== 'loading') void loadLeaderboard(); });
 elements.pizzaBoard.addEventListener('pointerdown', handlePointerDown);
 elements.pizzaBoard.addEventListener('pointermove', handlePointerMove);
 elements.pizzaBoard.addEventListener('pointerup', handlePointerUp);
@@ -1158,9 +1514,17 @@ document.addEventListener('visibilitychange', () => {
   } else tickClock();
 });
 
-// 11. STARTUP: load profiles/rules, then replay or refresh the saved run.
+// 11. STARTUP: load profiles/rules, then replay or refresh an existing saved run.
+// Loading the page never creates a player or starts a new run.
 async function initialiseApp() {
   if (busy) return;
+  const previousPlayer = getActivePlayer();
+  const entryWasSelectedName = Boolean(previousPlayer &&
+    elements.entryPlayerName.value.trim().toLowerCase() === previousPlayer.name.toLowerCase());
+  // A saved name-creation intent can only begin while no live run is locked.
+  // Drop an older completed-run reference before resolving the new identity.
+  if (pendingProfileName && !pendingAction) clearRun();
+  invalidateLeaderboard();
   stopClock();
   cancelPointerStroke();
   clearFeedback();
@@ -1168,30 +1532,45 @@ async function initialiseApp() {
   loaded = false;
   requestFailure = '';
   resetEditor();
-  setConnection('Loading your profile…', 'loading');
+  setConnection('Loading the arcade…', 'loading');
   renderInterface();
   try {
     const [settings, savedPlayers] = await Promise.all([
-      requestJSON('./game-rules.json'), requestJSON('/api/players')
+      requestJSON('./game-rules.json'), readSavedPlayers()
     ]);
     rules = validateRules(settings);
-    if (!Array.isArray(savedPlayers) || !savedPlayers.every(isValidPlayer)) throw new Error('Your saved profiles could not be read.');
     players = savedPlayers;
     if (!players.some((player) => player.id === activePlayerId)) {
       clearRun();
-      activePlayerId = sortProfilesByName(players)[0]?.id || null;
+      activePlayerId = null;
+      if (entryWasSelectedName && !pendingProfileName) elements.entryPlayerName.value = '';
     }
+    if (pendingProfileName && !isRunLocked()) {
+      const recovered = findPlayerByName(pendingProfileName);
+      elements.entryPlayerName.value = recovered?.name || pendingProfileName;
+      if (recovered) {
+        activePlayerId = recovered.id;
+        pendingProfileName = null;
+      }
+    } else if (getActivePlayer() && (entryWasSelectedName || !elements.entryPlayerName.value.trim())) {
+      // A lost rename reply must follow the same saved ID to its current name.
+      // Preserve a different, independently typed new-player draft.
+      elements.entryPlayerName.value = getActivePlayer().name;
+    }
+    if (!run && !isRunLocked()) setupOpen = true;
     loaded = true;
     elements.profileEditor.open = players.length === 0;
     renderRules();
     setConnection('Ready to slice');
     setMessage(elements.playerMessage, '');
-    setMessage(elements.gameMessage, players.length ? 'Ready for your one-minute rush? Press Start run.' : 'Create a solo profile, then start your one-minute rush.');
+    setMessage(elements.setupMessage, pendingProfileName ? 'Check your saved name to continue safely.' : '');
+    setMessage(elements.gameMessage, 'Enter your name to start your one-minute rush.');
     saveRecovery();
   } catch (error) {
     requestFailure = error.message;
     setConnection('Could not load the arcade', 'error');
-    setMessage(elements.playerMessage, error.message + ' Use Reload & recover to try again.', 'error');
+    setMessage(elements.gameMessage, error.message + ' Use Reload & recover to try again.', 'error');
+    setMessage(elements.setupMessage, 'Use Reload & recover below the board to reconnect.', 'error');
   } finally {
     busy = false;
     renderInterface();
@@ -1199,6 +1578,10 @@ async function initialiseApp() {
   if (!loaded) return;
   if (pendingAction) await performRunAction(pendingAction);
   else if (knownRunId && getActivePlayer()) await performRunAction({ kind: 'refresh', playerId: activePlayerId, runId: knownRunId, origin: 'recovery' });
+  else if (setupOpen && !elements.profilesDialog.open) {
+    if (pendingProfileName) elements.beginGame.focus({ preventScroll: true });
+    else elements.entryPlayerName.focus({ preventScroll: true });
+  }
 }
 
 readRecovery();

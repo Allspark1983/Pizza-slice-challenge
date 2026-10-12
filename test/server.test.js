@@ -203,6 +203,128 @@ test('legacy profiles import once with fresh records; CRUD persists and leaves t
   assert.equal(await readFile(fixture.legacyDataFile, 'utf8'), oldText);
 });
 
+test('the leaderboard starts empty, excludes unplayed profiles, and accepts only reads', async (t) => {
+  const fixture = await setup(t);
+  const empty = await fixture.request('/api/leaderboard');
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.body, { entries: [], totalPlayers: 0 });
+  assert.equal(empty.headers.get('content-type'), 'application/json; charset=utf-8');
+  assert.equal(empty.headers.get('cache-control'), 'no-store');
+  assert.equal(empty.headers.get('x-content-type-options'), 'nosniff');
+  await addPlayer(fixture);
+  const saved = await readFile(fixture.dataFile, 'utf8');
+  assert.deepEqual((await fixture.request('/api/leaderboard')).body, empty.body);
+  for (const method of ['POST', 'PATCH', 'DELETE']) {
+    const response = await fixture.request('/api/leaderboard', method, { score: 999 });
+    assert.equal(response.status, 405);
+    assert.equal(response.headers.get('allow'), 'GET');
+  }
+  assert.equal(await readFile(fixture.dataFile, 'utf8'), saved);
+});
+
+test('the leaderboard returns every played personal record in deterministic score, pizza and name order', async (t) => {
+  const fixture = await setup(t);
+  // Saved profiles remain valid when their old run history has been trimmed.
+  const records = [
+    ['High score', 40, 4], ['Many pizzas', 30, 8], ['alpha', 30, 4],
+    ['Beta', 30, 4], ['Zed', 30, 4], ['Åsa', 30, 4], ['\uE000', 30, 4], ['🙂', 30, 4],
+    ['Lower 20', 20, 2], ['Lower 10', 10, 1], ['Lower 5', 5, 1],
+    ['Played zero', 0, 0], ['Never played', 0, 0]
+  ];
+  const players = records.map(([name, bestScore, bestPizzaCount], index) => {
+    const runsPlayed = name === 'Never played' ? 0 : 1;
+    const runsWon = bestScore > 0 ? 1 : 0;
+    return {
+      id: `saved-player-${index}`, name, runsPlayed, runsWon, runsLost: runsPlayed - runsWon,
+      bestScore, bestPizzaCount, totalPizzasCompleted: bestPizzaCount,
+      previousBestScore: runsPlayed === 0 ? 240 : null
+    };
+  });
+  await mkdir(dirname(fixture.dataFile), { recursive: true });
+  const saved = JSON.stringify({ players: [...players].reverse(), runs: [] });
+  await writeFile(fixture.dataFile, saved);
+  const response = await fixture.request('/api/leaderboard');
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  assert.deepEqual(response.body, {
+    entries: players.slice(0, -1).map((player, index) => ({
+      rank: index + 1, playerId: player.id, name: player.name,
+      bestScore: player.bestScore, bestPizzaCount: player.bestPizzaCount, runsPlayed: 1
+    })),
+    totalPlayers: 12
+  });
+  assert.equal(response.body.entries.length, 12, 'The API keeps ranks beyond the first ten available.');
+  assert.equal(await readFile(fixture.dataFile, 'utf8'), saved);
+});
+
+test('the leaderboard reconciles the exact final deadline once and preserves the personal best across restarts and later runs', async (t) => {
+  const fixture = await setup(t);
+  const player = await addPlayer(fixture);
+  let run = await newRun(fixture, player.id, 'private-leaderboard-start');
+  run = await atWave(fixture, run, 11);
+  run = await completePizza(fixture, run);
+  run = await completePizza(fixture, run);
+  assert.equal(run.score, 20);
+  fixture.setTime(run.endsAt - 1);
+  assert.deepEqual((await fixture.request('/api/leaderboard')).body, { entries: [], totalPlayers: 0 });
+  fixture.setTime(run.endsAt);
+  const expected = {
+    entries: [{ rank: 1, playerId: player.id, name: player.name, bestScore: 15, bestPizzaCount: 2, runsPlayed: 1 }],
+    totalPlayers: 1
+  };
+  const deadline = await fixture.request('/api/leaderboard');
+  assert.equal(deadline.status, 200, JSON.stringify(deadline.body));
+  assert.deepEqual(deadline.body, expected);
+  assert.doesNotMatch(JSON.stringify(deadline.body), /private-leaderboard-start|requestId|runId|waveId|recorded|rulesSnapshot/);
+  assert.ok(!JSON.stringify(deadline.body).includes(run.id));
+  const recorded = JSON.parse(await readFile(fixture.dataFile, 'utf8'));
+  assert.equal(recorded.runs[0].status, 'won');
+  assert.equal(recorded.runs[0].pizzasMissed, 22);
+  assert.equal(recorded.runs[0].finishedAt, run.endsAt);
+  assert.equal(recorded.runs[0].recorded, true);
+  const repeated = await Promise.all(Array.from({ length: 3 }, () => fixture.request('/api/leaderboard')));
+  for (const response of repeated) assert.deepEqual(response.body, expected);
+  assert.deepEqual(JSON.parse(await readFile(fixture.dataFile, 'utf8')), recorded);
+  await close(fixture.server);
+  const restarted = await fixture.start();
+  const live = { ...fixture, ...restarted };
+  assert.deepEqual((await live.request('/api/leaderboard')).body, expected);
+  const later = await newRun(live, player.id, 'lower-score-after-leaderboard');
+  fixture.setTime(later.endsAt);
+  expected.entries[0].runsPlayed = 2;
+  assert.deepEqual((await live.request('/api/leaderboard')).body, expected);
+  const profile = (await live.request('/api/players')).body[0];
+  assert.equal(profile.runsPlayed, 2);
+  assert.equal(profile.runsWon, 1);
+  assert.equal(profile.runsLost, 1);
+  assert.equal(profile.totalPizzasCompleted, 2);
+});
+
+test('the leaderboard includes zero scores and reflects a profile rename, reorder and deletion', async (t) => {
+  const fixture = await setup(t);
+  const alia = await addPlayer(fixture, 'Alia');
+  const zed = await addPlayer(fixture, 'Zed');
+  const first = await newRun(fixture, alia.id, 'alia-start');
+  const second = await newRun(fixture, zed.id, 'zed-start');
+  assert.equal(first.endsAt, second.endsAt);
+  fixture.setTime(first.endsAt);
+  const initial = (await fixture.request('/api/leaderboard')).body;
+  assert.deepEqual(initial.entries.map(({ rank, name, bestScore }) => [rank, name, bestScore]),
+    [[1, 'Alia', 0], [2, 'Zed', 0]]);
+  assert.equal(initial.totalPlayers, 2);
+  assert.equal((await fixture.request(`/api/players/${zed.id}`, 'PATCH', { name: 'Aaron' })).status, 200);
+  const renamed = (await fixture.request('/api/leaderboard')).body;
+  assert.deepEqual(renamed.entries.map(({ rank, playerId, name }) => [rank, playerId, name]),
+    [[1, zed.id, 'Aaron'], [2, alia.id, 'Alia']]);
+  assert.equal((await fixture.request(`/api/players/${zed.id}`, 'DELETE')).status, 204);
+  const remaining = { entries: [{ rank: 1, playerId: alia.id, name: 'Alia', bestScore: 0,
+    bestPizzaCount: 0, runsPlayed: 1 }], totalPlayers: 1 };
+  assert.deepEqual((await fixture.request('/api/leaderboard')).body, remaining);
+  assert.equal((await fixture.request(`/api/runs/${second.id}`)).status, 404);
+  await close(fixture.server);
+  const restarted = await fixture.start();
+  assert.deepEqual((await restarted.request('/api/leaderboard')).body, remaining);
+});
+
 test('the first cut chooses the angle, clearing a batch waits for its schedule, and the minute continues', async (t) => {
   const fixture = await setup(t, { randomSequence: [0.5, 0] });
   const player = await addPlayer(fixture);

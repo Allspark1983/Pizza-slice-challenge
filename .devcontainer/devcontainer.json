@@ -1,10 +1,10 @@
 {
-  "name": "Pizza Slice Rush — Version 3.2",
+  "name": "Pizza Slice Rush — Version 3.3",
   "image": "mcr.microsoft.com/devcontainers/javascript-node:22-bookworm",
   "forwardPorts": [3000],
   "portsAttributes": {
     "3000": {
-      "label": "Pizza Slice Rush — Version 3.2",
+      "label": "Pizza Slice Rush — Version 3.3",
       "onAutoForward": "notify"
     }
   }

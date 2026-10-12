@@ -109,6 +109,30 @@ function publicPlayer(player) {
   };
 }
 
+function compareCodePoints(first, second) {
+  const left = Array.from(first, (character) => character.codePointAt(0));
+  const right = Array.from(second, (character) => character.codePointAt(0));
+  for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return left.length - right.length;
+}
+
+function publicLeaderboard(players) {
+  // Each played profile appears once, using its saved personal records.
+  const ranked = players.filter((player) => player.runsPlayed > 0).sort((first, second) =>
+    second.bestScore - first.bestScore || second.bestPizzaCount - first.bestPizzaCount ||
+    compareCodePoints(first.name.toLowerCase(), second.name.toLowerCase()) ||
+    compareCodePoints(first.id, second.id));
+  return {
+    entries: ranked.map((player, index) => ({
+      rank: index + 1, playerId: player.id, name: player.name,
+      bestScore: player.bestScore, bestPizzaCount: player.bestPizzaCount, runsPlayed: player.runsPlayed
+    })),
+    totalPlayers: ranked.length
+  };
+}
+
 function checkUniqueName(players, name, currentId) {
   if (players.some((player) => player.id !== currentId && player.name.toLowerCase() === name.toLowerCase())) {
     throw new RequestError(409, 'That player name is already in use.');
@@ -475,7 +499,12 @@ export async function createAppServer({
     try {
       const pathname = new URL(request.url, 'http://localhost').pathname;
       let answer;
-      if (pathname === '/api/players') {
+      if (pathname === '/api/leaderboard') {
+        if (request.method !== 'GET') methodNotAllowed(response, ['GET']);
+        answer = await transact((state) => ({
+          status: 200, changed: false, body: () => publicLeaderboard(state.players)
+        }));
+      } else if (pathname === '/api/players') {
         if (request.method === 'GET') {
           answer = await transact((state) => ({ status: 200, changed: false, body: () => state.players.map(publicPlayer) }));
         } else if (request.method === 'POST') {
@@ -610,7 +639,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     const server = await createAppServer();
     const host = process.env.HOST || '127.0.0.1';
     server.listen(Number(process.env.PORT || 3000), host, () => {
-      console.log(`Pizza Slice Rush Version 3.2 is running at http://${host}:${server.address().port}`);
+      console.log(`Pizza Slice Rush Version 3.3 is running at http://${host}:${server.address().port}`);
     });
   } catch (error) {
     console.error(error.message);

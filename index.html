@@ -3,9 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Pizza Slice Rush Version 3.2. A solo 60-second arcade game: cut pizzas as they slide in from the left, avoid grenades, and beat your own best score in five-second batches." />
+    <meta name="description" content="Pizza Slice Rush Version 3.3. Enter your name, slice for 60 seconds, and put your best score on the leaderboard. Your player, score, timer, and pizzas share one arcade screen." />
     <meta name="theme-color" content="#fcf7ed" />
-    <title>Pizza Slice Rush · Version 3.2 · Four Pizza</title>
+    <title>Pizza Slice Rush · Version 3.3 · Four Pizza</title>
     <link rel="stylesheet" href="style.css" />
     <script type="module" src="script.js"></script>
   </head>
@@ -13,39 +13,28 @@
     <a class="skip-link" href="#pizza-board">Skip to the pizza board</a>
     <header class="site-header">
       <div class="header-inner">
-        <div class="brand"><span class="brand-mark" aria-hidden="true">🍕</span><p class="brand-name">Four Pizza <span>The little arcade</span></p><span class="version-badge">Version 3.2</span></div>
-        <p id="connection-status" role="status" aria-live="polite">Loading your profile…</p>
+        <div class="brand"><span class="brand-mark" aria-hidden="true">🍕</span><div><p class="brand-name">Four Pizza <span>Arcade</span></p><h1 id="page-title">Pizza Slice <span>Rush.</span></h1></div><span class="version-badge">3.3</span></div>
+        <nav class="header-actions" aria-label="Game options"><button id="open-help" class="text-button" type="button">How to play</button><button id="open-profiles" class="text-button" type="button" disabled>Players</button></nav>
       </div>
     </header>
     <main class="page-shell">
-      <section class="page-intro" aria-labelledby="page-title">
-        <p class="eyebrow">Solo arcade · One continuous minute</p>
-        <h1 id="page-title">Pizza Slice <span>Rush.</span></h1>
-        <p class="intro-copy">More pizzas. Bigger rush. Slice your way to a new best.</p>
-      </section>
+      <section class="game-panel" aria-label="Pizza Slice Rush arcade">
+        <div class="scoreboard" aria-label="Player, score, and timer">
+          <div class="player-card"><p class="hud-label">Player</p><strong id="active-player-name">Your name here</strong><p class="best-target">Best to beat <strong id="best-to-beat">0</strong></p></div>
+          <div class="score-card"><p class="hud-label">Score</p><strong id="score-display">0</strong><span class="score-unit">points</span></div>
+          <div id="run-timer" class="run-timer" data-state="ready" aria-live="off"><label id="timer-label" for="timer-progress">Time left</label><p class="timer-value"><span id="timer-display" role="timer" aria-label="Seconds remaining" aria-live="off">60.0</span><span class="timer-unit">s</span></p><progress id="timer-progress" max="60000" value="60000" aria-labelledby="timer-label"></progress></div>
+        </div>
+        <div class="batch-strip"><div class="pizza-meta"><p id="batch-title">A full minute of slicing</p><span id="difficulty-display" class="difficulty-badge">Level —</span></div><div class="batch-clock" aria-live="off"><label id="batch-label" for="batch-progress">Batch time</label><progress id="batch-progress" max="5000" value="5000" aria-labelledby="batch-label"></progress><strong><span id="batch-timer" role="timer" aria-label="Seconds remaining in this batch" aria-live="off">5.0</span> s</strong></div></div>
+        <p id="countdown-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+        <p id="hazard-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
 
-      <div class="game-layout">
-        <section class="panel game-panel" aria-label="Pizza Slice Rush game">
-          <div class="run-heading"><p class="active-profile">Playing as <strong id="active-player-name">Choose a profile</strong></p><span id="run-status" class="run-status">Ready when you are</span></div>
-          <div class="scoreboard">
-            <div class="score-card"><p>Your score</p><strong id="score-display">0</strong><p class="best-target">Beat your best: <span id="best-to-beat">0</span></p></div>
-            <div id="run-timer" class="run-timer" data-state="ready" aria-live="off">
-              <div class="timer-heading"><label id="timer-label" for="timer-progress">Time left</label><p class="timer-value"><span id="timer-display" role="timer" aria-label="Seconds remaining" aria-live="off">60.0</span><span class="timer-unit">s</span></p></div>
-              <progress id="timer-progress" max="60000" value="60000" aria-labelledby="timer-label"></progress>
-              <p class="timer-note">The full minute counts.</p>
-            </div>
-          </div>
-          <dl class="run-counters"><div><dt>Pizzas completed</dt><dd id="pizzas-completed">0</dd></div><div><dt>Wrong cuts</dt><dd id="pizzas-spoiled">0</dd></div><div><dt>Grenades hit</dt><dd id="grenades-hit">0</dd></div><div><dt>Pizzas missed</dt><dd id="pizzas-missed">0</dd></div></dl>
-          <div class="pizza-meta"><p id="batch-title">Fresh pizzas every 5 seconds</p><span id="difficulty-display" class="difficulty-badge">Level —</span></div>
-          <div class="batch-clock" aria-live="off"><label id="batch-label" for="batch-progress">Batch time</label><progress id="batch-progress" max="5000" value="5000" aria-labelledby="batch-label"></progress><strong><span id="batch-timer" role="timer" aria-label="Seconds remaining in this batch" aria-live="off">5.0</span> s</strong></div>
-          <p id="countdown-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
-          <p id="hazard-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
-
-          <div id="pizza-board" class="pizza-board" tabindex="0" role="group" aria-label="Whole pizza slicing board" aria-describedby="cut-instructions keyboard-help" aria-disabled="true">
-            <div id="board-overlay" class="board-overlay"><span id="board-overlay-text">Create a solo profile to get started.</span></div>
+        <div class="arena-wrap">
+          <div id="pizza-board" class="pizza-board" tabindex="-1" role="group" aria-label="Whole pizza slicing board" aria-describedby="cut-instructions keyboard-help" aria-disabled="true">
+            <div id="board-overlay" class="board-overlay"><span id="board-overlay-text">Getting the arcade ready…</span></div>
             <p id="score-feedback" class="score-feedback" aria-hidden="true"></p>
             <svg id="pizza-svg" class="pizza-svg" viewBox="-150 -140 300 280" aria-hidden="true" focusable="false">
               <defs>
+                <clipPath id="arena-clip"><rect x="-150" y="-140" width="300" height="280" /></clipPath>
                 <radialGradient id="crust-fill"><stop offset="0.78" stop-color="#e2a653" /><stop offset="0.94" stop-color="#c58137" /><stop offset="1" stop-color="#a36127" /></radialGradient>
                 <radialGradient id="cheese-fill"><stop stop-color="#ffe49a" /><stop offset="1" stop-color="#efbd58" /></radialGradient>
                 <pattern id="cheese-speckles" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="6" cy="6" r="1.6" fill="#c79336" opacity="0.25" /><circle cx="18" cy="17" r="1" fill="#fff4bd" opacity="0.9" /></pattern>
@@ -63,53 +52,46 @@
                   <g class="grenade-art"><path d="M-4 -11 L-4 -17 L5 -17 L5 -10" fill="#8b9770" stroke="#39422d" stroke-width="1.8" /><path d="M5 -16 L10 -18 L15 -11" fill="none" stroke="#39422d" stroke-width="2.5" stroke-linecap="round" /><ellipse cx="0" cy="3" rx="13" ry="14" fill="#657b42" stroke="#354729" stroke-width="2" /><path d="M-11 -2 H11 M-12 5 H12 M-8 11 H8 M-4 -10 V15 M4 -10 V15" fill="none" stroke="#354729" stroke-width="1.4" /><path d="M-1 -4 H2 V4 H-1 Z M-1 7 H2 V10 H-1 Z" fill="#fff2bd" /></g>
                 </g>
               </defs>
+              <g clip-path="url(#arena-clip)">
               <g id="batch-motion" transform="translate(0 0)">
                 <g id="pizzas-layer"></g>
                 <g id="grenades-layer" pointer-events="none"></g>
                 <g id="blade-layer" visibility="hidden"><line id="blade-shadow" class="blade-shadow" /><line id="blade-line" class="blade-line" /></g>
               </g>
               <g id="pizza-feedback-layer" pointer-events="none"></g>
+              </g>
             </svg>
           </div>
-          <div class="board-counter"><span id="board-summary">Your first batch is waiting</span></div>
-          <div class="hazard-row"><span id="hazard-status" class="hazard-status" aria-live="off">No active grenade</span><span>One swipe can cut several pizzas</span></div>
-          <p id="cut-instructions" class="cut-instructions"><strong>Your first cut sets the direction.</strong> New batches slide in from the left. Swipe through a pizza’s centre, then space your cuts evenly to make its required slices. Finish the batch before its timer runs out. Avoid grenades, even on short swipes.</p>
-          <details id="keyboard-controls" class="keyboard-controls"><summary>Use the keyboard blade</summary><div class="keyboard-inner">
-            <label for="target-pizza">Pizza to aim at</label><select id="target-pizza" aria-describedby="keyboard-help" disabled><option value="">No pizza on the board</option></select>
-            <div class="angle-heading"><label for="blade-angle">Blade angle</label><output id="blade-angle-value" for="blade-angle">0°</output></div>
-            <input id="blade-angle" type="range" min="0" max="179" step="1" value="0" aria-describedby="keyboard-help" disabled />
-            <div class="angle-scale" aria-hidden="true"><span>0° horizontal</span><span>90° vertical</span><span>179°</span></div>
-            <button id="cut-angle" class="button button-secondary" type="button" disabled>Make cut</button>
-            <p id="keyboard-help">Choose a pizza and an angle, then Make cut. On the board, Left/Right adjusts by 5°; Enter or Space cuts. Your first cut sets the direction; keep later cuts evenly spaced.</p>
-          </div></details>
-          <div id="result-banner" class="result-banner" aria-labelledby="result-title" hidden><h2 id="result-title"></h2><p id="result-detail"></p></div>
-          <div class="game-actions"><button id="start-run" class="button button-primary" type="button" disabled>Start run</button><button id="create-profile-shortcut" class="button button-secondary" type="button" disabled>Create profile</button><button id="retry-action" class="button button-secondary" type="button" hidden>Retry</button><button id="check-run" class="button button-secondary" type="button" hidden>Check run</button><button id="reload-players" class="button button-secondary" type="button" hidden>Reload &amp; recover</button></div>
-          <p id="game-message" class="message" role="status" aria-live="polite" aria-atomic="true">Create or choose a solo profile, then start your run.</p>
-        </section>
+          <section id="setup-screen" class="screen-overlay setup-screen" aria-labelledby="setup-title">
+            <div class="setup-card"><p class="eyebrow">One player. One minute.</p><h2 id="setup-title">Ready to make the cut?</h2><p class="setup-copy">Enter your name and chase a new high score.</p>
+              <form id="start-form" class="start-form">
+                <div id="saved-player-field" hidden><label for="saved-player-select">Played before?</label><select id="saved-player-select" disabled><option value="">Choose a saved player</option></select></div>
+                <label for="entry-player-name">Player name</label><input id="entry-player-name" name="playerName" type="text" placeholder="Your name" required minlength="1" maxlength="24" autocomplete="nickname" aria-describedby="entry-name-help setup-message" disabled /><p id="entry-name-help" class="field-help">1–24 characters. Use the same name to keep your record.</p>
+                <button id="begin-game" class="button button-primary" type="submit" disabled>Start 60-second rush <span aria-hidden="true">→</span></button>
+                <p id="setup-message" class="message" role="status" aria-live="polite" aria-atomic="true"></p>
+              </form>
+              <p class="setup-hint">Swipe through the centre. Make equal slices. Watch for grenades.</p>
+            </div>
+          </section>
+          <section id="result-banner" class="screen-overlay result-screen" aria-labelledby="result-title" hidden>
+            <div class="result-card"><div class="result-heading"><div><p class="eyebrow">Minute complete</p><h2 id="result-title" tabindex="-1"></h2></div><p class="result-score"><strong id="result-score">0</strong><span>this run</span></p></div><p id="result-detail"></p>
+              <section class="leaderboard" aria-labelledby="leaderboard-title"><div class="leaderboard-heading"><h3 id="leaderboard-title">Leaderboard <span>Best scores</span></h3><span id="leaderboard-count"></span></div><p id="leaderboard-message" class="message" role="status" aria-live="polite" aria-atomic="true"></p><div id="leaderboard-scroll" class="leaderboard-scroll" tabindex="0" role="region" aria-label="Best scores leaderboard" hidden><table><thead><tr><th scope="col">Rank</th><th scope="col">Player</th><th scope="col">Best</th><th scope="col">Pizzas</th></tr></thead><tbody id="leaderboard-rows"></tbody></table></div><p id="leaderboard-own-place" class="own-place" hidden></p><button id="retry-leaderboard" class="text-button" type="button" hidden>Retry leaderboard</button></section>
+              <div class="result-actions"><button id="start-run" class="button button-primary" type="button" disabled>Play again</button><button id="create-profile-shortcut" class="button button-secondary" type="button" disabled>Change player</button></div>
+            </div>
+          </section>
+        </div>
 
-        <aside class="panel profile-panel" aria-labelledby="profile-title">
-          <p class="eyebrow">Your saved progress</p><h2 id="profile-title">Solo profile</h2>
-          <p class="section-copy">Every run is you against your own record.</p>
-          <label for="player-select">Profile</label><select id="player-select" aria-describedby="player-message"><option value="">Create a profile first</option></select>
-          <div class="profile-actions"><button id="edit-profile" class="text-button" type="button" disabled>Rename</button><button id="delete-profile" class="text-button text-danger" type="button" disabled>Delete</button></div>
-          <dl class="profile-record"><div><dt>Best score · 3.2</dt><dd id="profile-best-score">0</dd></div><div><dt>Most pizzas in a run</dt><dd id="profile-best-pizzas">0</dd></div><div><dt>Runs played</dt><dd id="profile-runs-played">0</dd></div><div><dt>Total pizzas</dt><dd id="profile-total-pizzas">0</dd></div><div><dt>Wins</dt><dd id="profile-runs-won">0</dd></div><div><dt>Losses</dt><dd id="profile-runs-lost">0</dd></div></dl>
-          <p id="previous-best-record" class="previous-record" hidden>Previous Version 3.0 best: <strong id="previous-best-score">0</strong> points. Your current record continues from Version 3.1.</p>
-          <details id="profile-editor" class="profile-editor" open><summary id="profile-editor-title">Add a profile</summary>
-            <form id="player-form" class="player-form"><h3 id="player-form-title" class="sr-only">Add a profile</h3><label for="player-name">Name</label><input id="player-name" name="playerName" type="text" placeholder="Your name" required minlength="1" maxlength="24" autocomplete="nickname" aria-describedby="player-name-help player-message" /><p id="player-name-help" class="field-help">1–24 characters.</p><div class="form-actions"><button id="player-submit" class="button button-primary" type="submit">Add profile</button><button id="cancel-edit" class="button button-secondary" type="button" hidden>Cancel</button></div></form>
-          </details>
-          <p id="player-message" class="message" role="status" aria-live="polite"></p>
-          <div class="profile-note"><strong>A win means a new best score.</strong> At the end of the minute, beat the record you started with to win. Ties count as a loss.</div>
-        </aside>
-      </div>
-
-      <section class="how-to" aria-labelledby="how-to-title"><h2 id="how-to-title">The Rush rules</h2>
-        <div class="point-rules"><p><strong id="complete-points">+10</strong><span>Complete a pizza</span></p><p><strong id="wrong-penalty">−5</strong><span>Wrong complete cut</span></p><p><strong id="grenade-penalty">−10</strong><span>Swipe a grenade</span></p><p><strong id="missed-penalty">−5</strong><span>Miss a pizza</span></p></div>
-        <p id="timing-summary" class="rules-note">3 seconds to prepare, then a full 60 seconds. Fresh batches slide in from the left every 5 seconds: 1 pizza at first, 2 after 20 seconds, and 3 after 40 seconds.</p>
-        <p class="rules-note">Unfinished pizzas cost 5 points each when the batch expires. Clear it early and wait for the next batch. Your score stays at zero or above. Away from grenades, incomplete swipes and duplicate cuts are ignored.</p>
-        <ul id="size-rules" class="size-rules" aria-label="Pizza size and slice requirements"><li><strong>10″</strong><span>Small · 4 slices · 2 cuts, 90° apart</span></li><li><strong>12″</strong><span>Medium · 6 slices · 3 cuts, 60° apart</span></li><li><strong>14″</strong><span>Large · 8 slices · 4 cuts, 45° apart</span></li></ul>
+        <dl class="run-counters"><div><dt>Complete</dt><dd id="pizzas-completed">0</dd></div><div><dt>Wrong cuts</dt><dd id="pizzas-spoiled">0</dd></div><div><dt>Grenades</dt><dd id="grenades-hit">0</dd></div><div><dt>Missed</dt><dd id="pizzas-missed">0</dd></div></dl>
+        <div class="board-state"><span id="board-summary">Your first batch is waiting</span><span id="hazard-status" class="hazard-status" aria-live="off">Watch for grenades</span></div>
+        <div class="game-toolbar"><span id="run-status" class="run-status">Ready when you are</span><details id="keyboard-controls" class="keyboard-controls"><summary>Keyboard blade</summary><div class="keyboard-inner"><div class="keyboard-title"><h3>Keyboard blade</h3><button id="close-keyboard" class="text-button" type="button" aria-label="Close keyboard blade">Close</button></div><label for="target-pizza">Pizza to aim at</label><select id="target-pizza" aria-describedby="keyboard-help" disabled><option value="">No pizza on the board</option></select><div class="angle-heading"><label for="blade-angle">Blade angle</label><output id="blade-angle-value" for="blade-angle">0°</output></div><input id="blade-angle" type="range" min="0" max="179" step="1" value="0" aria-describedby="keyboard-help" disabled /><div class="angle-scale" aria-hidden="true"><span>0° horizontal</span><span>90° vertical</span><span>179°</span></div><button id="cut-angle" class="button button-secondary" type="button" disabled>Make cut</button><p id="keyboard-help">Choose a pizza and an angle, then Make cut. On the board, Left/Right adjusts by 5°; Enter or Space cuts. The first cut sets the direction. Keep later cuts evenly spaced.</p></div></details></div>
+        <div class="game-actions"><button id="retry-action" class="button button-secondary" type="button" hidden>Retry</button><button id="check-run" class="button button-secondary" type="button" hidden>Check run</button><button id="reload-players" class="button button-secondary" type="button" hidden>Reload &amp; recover</button></div>
+        <p id="game-message" class="message" role="status" aria-live="polite" aria-atomic="true">Enter your name to start your one-minute rush.</p>
       </section>
     </main>
-    <footer class="site-footer"><p>Four Pizza <span aria-hidden="true">·</span> Pizza Slice Rush <span aria-hidden="true">·</span> Version 3.2</p></footer>
-    <dialog id="delete-dialog" class="delete-dialog" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description"><p class="eyebrow">Profile settings</p><h2 id="delete-dialog-title">Delete this profile?</h2><p id="delete-dialog-description">This removes <strong id="delete-player-name"></strong>, their saved runs, and their records. This cannot be undone.</p><div class="dialog-actions"><button id="cancel-delete" class="button button-secondary" type="button" autofocus>Keep profile</button><button id="confirm-delete" class="button button-danger" type="button">Delete profile</button></div></dialog>
+    <footer class="site-footer"><p>Four Pizza · Pizza Slice Rush · Version 3.3</p><p id="connection-status" role="status" aria-live="polite">Loading the arcade…</p></footer>
+
+    <dialog id="profiles-dialog" class="app-dialog" aria-labelledby="profile-title"><div class="dialog-heading"><div><p class="eyebrow">Saved progress</p><h2 id="profile-title">Your players</h2></div><button id="close-profiles" class="text-button" type="button" autofocus>Close</button></div><p class="section-copy">Choose, rename, or add a player. Best scores stay with their saved name.</p><label for="player-select">Saved player</label><select id="player-select" aria-describedby="player-message"><option value="">Create a player first</option></select><div class="profile-actions"><button id="edit-profile" class="text-button" type="button" disabled>Rename</button><button id="delete-profile" class="text-button text-danger" type="button" disabled>Delete</button></div><dl class="profile-record"><div><dt>Best score</dt><dd id="profile-best-score">0</dd></div><div><dt>Most pizzas in a run</dt><dd id="profile-best-pizzas">0</dd></div><div><dt>Runs played</dt><dd id="profile-runs-played">0</dd></div><div><dt>Total pizzas</dt><dd id="profile-total-pizzas">0</dd></div><div><dt>Wins</dt><dd id="profile-runs-won">0</dd></div><div><dt>Losses</dt><dd id="profile-runs-lost">0</dd></div></dl><p id="previous-best-record" class="previous-record" hidden>Previous Version 3.0 best: <strong id="previous-best-score">0</strong> points. Your current record continues from Version 3.1.</p><details id="profile-editor" class="profile-editor"><summary id="profile-editor-title">Add a player</summary><form id="player-form" class="player-form"><h3 id="player-form-title" class="sr-only">Add a player</h3><label for="player-name">Name</label><input id="player-name" name="playerName" type="text" placeholder="Your name" required minlength="1" maxlength="24" autocomplete="nickname" aria-describedby="player-name-help player-message" /><p id="player-name-help" class="field-help">1–24 characters.</p><div class="form-actions"><button id="player-submit" class="button button-primary" type="submit">Add player</button><button id="cancel-edit" class="button button-secondary" type="button" hidden>Cancel</button></div></form></details><p id="player-message" class="message" role="status" aria-live="polite"></p></dialog>
+    <dialog id="help-dialog" class="app-dialog help-dialog" aria-labelledby="how-to-title"><div class="dialog-heading"><div><p class="eyebrow">The Rush rules</p><h2 id="how-to-title">How to play</h2></div><button id="close-help" class="text-button" type="button" autofocus>Close</button></div><p id="cut-instructions" class="cut-instructions"><strong>Your first cut sets the direction.</strong> New batches slide in from the left. Swipe through a pizza’s centre, then space your cuts evenly to make its required slices. Finish each batch before its timer runs out. Avoid grenades, even on short swipes.</p><div class="point-rules"><p><strong id="complete-points">+10</strong><span>Complete a pizza</span></p><p><strong id="wrong-penalty">−5</strong><span>Wrong complete cut</span></p><p><strong id="grenade-penalty">−10</strong><span>Swipe a grenade</span></p><p><strong id="missed-penalty">−5</strong><span>Miss a pizza</span></p></div><p id="timing-summary" class="rules-note">3 seconds to prepare, then a full 60 seconds. Fresh batches slide in from the left every 5 seconds: 1 pizza at first, 2 after 20 seconds, and 3 after 40 seconds.</p><ul id="size-rules" class="size-rules" aria-label="Pizza size and slice requirements"><li><strong>10″</strong><span>Small · 4 slices · 2 cuts, 90° apart</span></li><li><strong>12″</strong><span>Medium · 6 slices · 3 cuts, 60° apart</span></li><li><strong>14″</strong><span>Large · 8 slices · 4 cuts, 45° apart</span></li></ul><p class="rules-note">Unfinished pizzas cost 5 points each when the batch expires. Clear it early and wait for the next batch. Your score stays at zero or above. Away from grenades, incomplete swipes and duplicate cuts are ignored.</p><p class="rules-note"><strong>A win means a new personal best.</strong> At the end of the minute, beat the record you started with to win. Ties count as a loss. The leaderboard ranks each player’s best score, then their most pizzas completed in a run.</p></dialog>
+    <dialog id="delete-dialog" class="app-dialog delete-dialog" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description"><p class="eyebrow">Player settings</p><h2 id="delete-dialog-title">Delete this player?</h2><p id="delete-dialog-description">This removes <strong id="delete-player-name"></strong>, their saved runs, and their records. This cannot be undone.</p><div class="dialog-actions"><button id="cancel-delete" class="button button-secondary" type="button" autofocus>Keep player</button><button id="confirm-delete" class="button button-danger" type="button">Delete player</button></div></dialog>
   </body>
 </html>
