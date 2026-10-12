@@ -1,0 +1,18 @@
+{
+  "roundDurationMs": 20000,
+  "preparationMs": 3000,
+  "pizzas": [
+    {
+      "sizeInches": 14,
+      "slices": 8
+    },
+    {
+      "sizeInches": 10,
+      "slices": 6
+    },
+    {
+      "sizeInches": 8,
+      "slices": 4
+    }
+  ]
+}

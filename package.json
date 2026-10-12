@@ -1,0 +1,15 @@
+{
+  "name": "pizza-slice-challenge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cut random whole pizzas into equal slices, with player CRUD and server-judged REST results.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test",
+    "check": "node --check server.js && node --check script.js && node --check game.js"
+  }
+}

@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="A whole pizza, a ticking clock, and a few precise cuts. Take turns, slice along the guides, and compete for the fastest finish in each pizza size." />
+    <meta name="theme-color" content="#fcf7ed" />
+    <title>Pizza Slice Challenge · Four Pizza</title>
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="script.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to the game</a>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">🍕</span>
+          <p class="brand-name">Four Pizza <span>The little arcade</span></p>
+        </div>
+        <p id="connection-status" role="status" aria-live="polite">Loading players…</p>
+      </div>
+    </header>
+
+    <main id="main-content" class="page-shell">
+      <noscript><p class="message message-error">This game needs JavaScript. Turn it on, then reload the page.</p></noscript>
+      <section class="page-intro" aria-labelledby="page-title">
+        <p class="eyebrow">A little precision. A little competition.</p>
+        <h1 id="page-title">Pizza Slice Challenge<span aria-hidden="true">.</span></h1>
+        <p class="intro-copy">One whole pizza. Follow the guides. Make every cut count.</p>
+        <ul id="size-rules" class="size-rules" aria-label="Pizza sizes and required slices">
+          <li><strong>14″</strong><span>8 slices · 4 cuts</span></li>
+          <li><strong>10″</strong><span>6 slices · 3 cuts</span></li>
+          <li><strong>8″</strong><span>4 slices · 2 cuts</span></li>
+        </ul>
+      </section>
+
+      <div class="game-layout">
+        <section class="panel players-panel" aria-labelledby="players-title">
+          <div class="section-heading">
+            <h2 id="players-title">Your players</h2>
+            <span class="count-badge" aria-label="Total players"><span id="player-count">0</span></span>
+          </div>
+          <p class="section-copy">Take turns and keep everyone's records.</p>
+          <form id="player-form" class="player-form">
+            <h3 id="player-form-title">Add a player</h3>
+            <label for="player-name">Player name</label>
+            <input id="player-name" name="playerName" type="text" placeholder="Enter a name" required minlength="1" maxlength="24" autocomplete="nickname" aria-describedby="player-name-help player-message" />
+            <p id="player-name-help" class="field-help">Up to 24 characters.</p>
+            <div class="form-actions">
+              <button id="player-submit" class="button button-primary" type="submit">Add player</button>
+              <button id="cancel-edit" class="button button-secondary" type="button" hidden>Cancel</button>
+            </div>
+          </form>
+          <p id="player-message" class="message" role="status" aria-live="polite"></p>
+
+          <div class="player-list-section">
+            <div class="leaderboard-heading">
+              <h3>Leaderboard</h3>
+              <label class="sr-only" for="leaderboard-size">Pizza size for leaderboard</label>
+              <select id="leaderboard-size">
+                <option value="14">14-inch pizza</option>
+                <option value="10">10-inch pizza</option>
+                <option value="8">8-inch pizza</option>
+              </select>
+            </div>
+            <p id="leaderboard-description" class="field-help">Fastest 14-inch finish first. Choose a player below.</p>
+            <ul id="player-list" class="player-list" aria-label="Player leaderboard" aria-describedby="leaderboard-description"></ul>
+            <p id="players-empty" class="empty-message">Loading your players…</p>
+          </div>
+        </section>
+
+        <section class="panel game-panel" aria-labelledby="game-title">
+          <div class="game-heading">
+            <div><p class="eyebrow">At the cutting board</p><h2 id="game-title">Ready, steady, slice.</h2></div>
+            <span id="round-status" class="round-status">Ready when you are</span>
+          </div>
+          <div class="active-player">
+            <span class="active-player-icon" aria-hidden="true">★</span>
+            <div><p class="active-player-label">Playing as</p><p id="active-player-name">Choose a player</p></div>
+            <dl class="player-totals">
+              <div><dt>Wins</dt><dd id="wins-display">0</dd></div>
+              <div><dt>Losses</dt><dd id="losses-display">0</dd></div>
+            </dl>
+          </div>
+          <dl class="best-records" aria-label="Selected player's fastest finish for each size">
+            <div data-size="14"><dt>14″ best</dt><dd id="best-time-14">No finish yet</dd></div>
+            <div data-size="10"><dt>10″ best</dt><dd id="best-time-10">No finish yet</dd></div>
+            <div data-size="8"><dt>8″ best</dt><dd id="best-time-8">No finish yet</dd></div>
+          </dl>
+
+          <div class="round-summary">
+            <div class="pizza-target"><p>This round’s pizza</p><strong id="pizza-size-display">—</strong><span id="slice-target">Start a round to reveal it</span></div>
+            <div id="round-timer" class="round-timer" data-state="ready" aria-live="off">
+              <div class="timer-heading"><label id="timer-label" for="timer-progress">Time to slice</label><p class="timer-value"><span id="timer-display" role="timer" aria-label="Timer in seconds" aria-live="off">20.0</span><span class="timer-unit"> s</span></p></div>
+              <progress id="timer-progress" max="20000" value="20000" aria-labelledby="timer-label"></progress>
+            </div>
+          </div>
+          <p id="countdown-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+
+          <div id="pizza-board" class="pizza-board" tabindex="0" role="group" aria-label="Whole pizza slicing board" aria-describedby="cut-instructions keyboard-help" aria-disabled="true">
+            <div id="board-overlay" class="board-overlay"><span id="board-overlay-text">Choose a player, then start a round.</span></div>
+            <svg id="pizza-svg" class="pizza-svg" viewBox="-135 -135 270 270" aria-hidden="true" focusable="false">
+              <defs>
+                <radialGradient id="crust-fill"><stop offset="0.78" stop-color="#dea452" /><stop offset="0.94" stop-color="#c58137" /><stop offset="1" stop-color="#a86329" /></radialGradient>
+                <radialGradient id="cheese-fill"><stop stop-color="#ffe49a" /><stop offset="1" stop-color="#efbd58" /></radialGradient>
+                <pattern id="cheese-speckles" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="6" cy="6" r="1.6" fill="#c79336" opacity="0.25" /><circle cx="18" cy="17" r="1" fill="#fff4bd" opacity="0.9" /></pattern>
+              </defs>
+              <g id="pizza-surface">
+                <circle class="pizza-shadow" cx="0" cy="5" r="102" fill="#67481f" opacity="0.13" />
+                <circle r="100" fill="url(#crust-fill)" />
+                <circle r="91" fill="#c44a2e" />
+                <circle r="86" fill="url(#cheese-fill)" />
+                <circle r="85" fill="url(#cheese-speckles)" />
+                <g fill="#d95835" stroke="#b83925" stroke-width="2">
+                  <circle cx="-35" cy="-43" r="15" /><circle cx="36" cy="-47" r="13" /><circle cx="-57" cy="20" r="14" /><circle cx="17" cy="19" r="16" /><circle cx="48" cy="36" r="13" /><circle cx="-15" cy="61" r="12" />
+                </g>
+                <g fill="#ee8c57" opacity="0.85">
+                  <circle cx="-39" cy="-47" r="4" /><circle cx="32" cy="-51" r="3.5" /><circle cx="-61" cy="16" r="4" /><circle cx="13" cy="15" r="4.5" /><circle cx="44" cy="32" r="3.5" /><circle cx="-18" cy="58" r="3" />
+                </g>
+                <g fill="#57793c"><path d="M-10 -65 Q12 -59 -1 -34 Q-20 -41 -10 -65" /><path d="M54 -15 Q77 -20 66 6 Q48 9 54 -15" /><path d="M-43 54 Q-33 34 -17 39 Q-16 59 -43 54" /><path d="M-16 -13 Q-39 -19 -31 1 Q-14 11 -16 -13" /></g>
+                <g fill="none" stroke="#fff0bd" stroke-width="3" stroke-linecap="round" opacity="0.75"><path d="M-62 -31 Q-49 -40 -48 -29" /><path d="M28 58 Q39 48 38 62" /><path d="M13 -68 Q20 -63 15 -54" /><path d="M-65 -2 Q-52 -10 -48 -5" /></g>
+                <g id="guides-layer"></g>
+                <g id="cuts-layer"></g>
+                <circle r="3" fill="#fffdf2" stroke="#70532e" stroke-width="1" />
+                <g id="blade-layer" style="display: none"><line id="blade-shadow" class="blade-shadow" /><line id="blade-line" class="blade-line" /></g>
+              </g>
+            </svg>
+            <div class="board-counter" aria-live="off"><span><strong id="cuts-display">0</strong> / <span id="cuts-target">—</span> cuts</span><span><strong id="slices-display">1</strong> / <span id="slices-target">—</span> slices</span></div>
+          </div>
+
+          <p id="cut-instructions" class="cut-instructions"><strong>Crust to crust.</strong> Drag or swipe a straight line through the centre along each dashed guide.</p>
+          <details id="keyboard-controls" class="keyboard-controls">
+            <summary>Use the keyboard blade</summary>
+            <div class="keyboard-inner">
+              <div class="angle-heading"><label for="blade-angle">Blade angle</label><output id="blade-angle-value" for="blade-angle">0°</output></div>
+              <input id="blade-angle" type="range" min="0" max="179" step="1" value="0" aria-describedby="keyboard-help" disabled />
+              <div class="angle-scale" aria-hidden="true"><span>0° horizontal</span><span>90° vertical</span><span>179°</span></div>
+              <button id="cut-angle" class="button button-secondary" type="button" disabled>Make cut</button>
+              <p id="keyboard-help">Aim with the angle slider, then choose Make cut. On the pizza board, Left/Right changes the angle by 5°; Enter or Space makes a cut. Match the guides yourself.</p>
+            </div>
+          </details>
+
+          <div class="game-actions">
+            <button id="start-round" class="button button-primary" type="button" disabled>Start round</button>
+            <button id="retry-action" class="button button-secondary" type="button" hidden>Retry</button>
+            <button id="check-round" class="button button-secondary" type="button" hidden>Check round</button>
+            <button id="reload-players" class="button button-secondary" type="button" hidden>Reload &amp; recover</button>
+          </div>
+          <p id="game-message" class="message" role="status" aria-live="polite" aria-atomic="true">Add or choose a player, then start a round.</p>
+        </section>
+      </div>
+
+      <section class="how-to" aria-labelledby="how-to-title">
+        <h2 id="how-to-title">A few house rules</h2>
+        <ol>
+          <li><span>1</span><p>A random pizza appears. <strong id="timing-summary">3 seconds to prepare, then 20 seconds to slice.</strong></p></li>
+          <li><span>2</span><p>Follow each dashed guide once. One full cut passes through the centre from one edge to the opposite edge.</p></li>
+          <li><span>3</span><p>A complete wrong cut or an expired timer loses. Short or outside swipes and repeated cuts are ignored.</p></li>
+        </ol>
+        <p class="rules-note">Fastest winning times are ranked separately for each pizza size. Everyone takes turns on the same screen.</p>
+      </section>
+    </main>
+
+    <footer class="site-footer"><p>Four Pizza <span aria-hidden="true">·</span> A little friendly competition.</p></footer>
+    <dialog id="delete-dialog" class="delete-dialog" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description">
+      <p class="eyebrow">Player settings</p><h2 id="delete-dialog-title">Delete this player?</h2>
+      <p id="delete-dialog-description">This removes <strong id="delete-player-name"></strong>, their rounds, and their records. This cannot be undone.</p>
+      <div class="dialog-actions"><button id="cancel-delete" class="button button-secondary" type="button" autofocus>Keep player</button><button id="confirm-delete" class="button button-danger" type="button">Delete player</button></div>
+    </dialog>
+  </body>
+</html>
