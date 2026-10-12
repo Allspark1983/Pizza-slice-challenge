@@ -1,8 +1,8 @@
 {
   "name": "pizza-slice-challenge",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "private": true,
-  "description": "Version 3.1: a solo 60-second pizza rush with freehand cuts, multiple pizzas, proportional sizes, player CRUD, and REST scoring.",
+  "description": "Version 3.2: a solo 60-second pizza rush with batches sliding in from the left, freehand cuts, player CRUD, and REST scoring.",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -10,6 +10,6 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
-    "check": "node --check server.js && node --check script.js && node --check game.js"
+    "check": "node --check server.js && node --check script.js && node --check game.js && node --check motion.js"
   }
 }

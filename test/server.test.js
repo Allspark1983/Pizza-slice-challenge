@@ -608,7 +608,7 @@ test('corrupt legacy profiles fail safely and never create a replacement store',
 
 test('public responses expose confirmed cuts only and the static allowlist protects both data versions', async (t) => {
   const fixture = await setup(t);
-  for (const filename of ['style.css', 'script.js', 'game.js']) await writeFile(join(fixture.publicDir, filename), '/* public */');
+  for (const filename of ['style.css', 'script.js', 'game.js', 'motion.js']) await writeFile(join(fixture.publicDir, filename), '/* public */');
   await writeFile(join(fixture.publicDir, 'server.js'), 'PRIVATE_SERVER_MARKER');
   const player = await addPlayer(fixture);
   let run = await newRun(fixture, player.id, 'private-start-id');
@@ -619,10 +619,15 @@ test('public responses expose confirmed cuts only and the static allowlist prote
   assert.doesNotMatch(JSON.stringify(response.body), /private-start-id|requestId|recorded|rulesSnapshot|anchorAngle|guideAngles|completedCuts|eventSerial/);
   assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
   assert.equal(response.headers.get('cache-control'), 'no-store');
-  for (const path of ['/', '/index.html', '/style.css', '/script.js', '/game.js', '/game-rules.json']) {
+  for (const path of ['/', '/index.html', '/style.css', '/script.js', '/game.js', '/motion.js', '/game-rules.json']) {
     const response = await fetch(fixture.base + path);
     assert.equal(response.status, 200);
-    await response.text();
+    const contents = await response.text();
+    if (path === '/motion.js') {
+      assert.equal(response.headers.get('content-type'), 'text/javascript; charset=utf-8');
+      assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+      assert.equal(contents, '/* public */');
+    }
   }
   for (const path of ['/server.js', '/.data/rush-3.1.json', '/.data/rush.json', '/.data/game.json',
     '/package.json', '/test/server.test.js', '/%2e%2e%2f.data%2frush-3.1.json', '/api/config', '/api/rounds']) {

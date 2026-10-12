@@ -1,13 +1,13 @@
-# Pizza Slice Rush — Version 3.1
+# Pizza Slice Rush — Version 3.2
 
 **Repository:** [Allspark1983/Pizza-slice-challenge](https://github.com/Allspark1983/Pizza-slice-challenge), branch **`main`**.
 
-A **solo 60-second game** built with HTML, CSS, plain JavaScript, and a Node.js REST API. Slice up to three pizzas in each five-second batch, avoid temporary grenades, and try to beat your Version 3.1 personal best **score**. The API judges cuts, applies points and penalties, and decides the final result.
+A **solo 60-second game** built with HTML, CSS, plain JavaScript, and a Node.js REST API. Pizza batches now **slide in from the left**. Slice up to three pizzas in each five-second batch, avoid temporary grenades, and try to beat your personal best **score**. The API judges cuts, applies points and penalties, and decides the final result. Your Version 3.1 records continue in this update.
 
 ## How to play
 
 1. Add or choose your solo profile and start a run.
-2. Wait for **3, 2, 1**. At **Go**, one continuous **60-second** clock begins.
+2. Wait for **3, 2, 1**. The first pizza slides in near the end of preparation. At **Go**, one continuous **60-second** clock begins.
 3. Make a full straight cut through a pizza's centre. **Your first cut sets its orientation**; add equally spaced cuts to make the required slices. There are no guide lines or hidden required first angles.
 4. Use a mouse, touch, or pen to swipe across the board; one stroke can affect several pizzas. For keyboard play, choose a target pizza and an angle, then choose **Make cut**.
 5. Finish each pizza before the batch's **five-second** timer expires. Avoid any grenade until it disappears. If you clear the board early, wait for the next scheduled batch.
@@ -21,6 +21,14 @@ A **solo 60-second game** built with HTML, CSS, plain JavaScript, and a Node.js 
 | Leave a pizza unfinished when its batch expires. | **−5** | Missed-pizza count increases and that pizza is removed. |
 
 **Your score never goes below zero.** Penalties apply per pizza, and every outcome keeps the same minute running. A multi-pizza swipe processes affected pizzas in the server's stored order. Short/outside strokes and repeated correct cuts normally have no effect. Grenades are checked first, so a swipe through an active grenade can cost points even when it would otherwise be an incomplete or duplicate cut.
+
+## Sliding arrivals
+
+Each batch moves in from the left over **450 milliseconds (0.45 seconds)**, then stays in its usual board positions. Pizzas, size labels, grenades, and the blade share the same moving frame.
+
+The first entrance uses the final 450 milliseconds of preparation. Later entrances use the first 450 milliseconds of their existing five-second waves. **During playing time, you can cut while pizzas arrive.** Pressing down holds the batch's visible position steady through the gesture and any pending confirmation, while both clocks keep running. Once the gesture and any pending confirmation are finished, movement resumes at its scheduled phase.
+
+Refreshing or receiving another response for the same wave does not replay its entrance. With **reduced motion** enabled, pizzas appear at their destination immediately. The slide changes presentation; scoring, wave deadlines, and the full-minute run remain the same.
 
 ## Pizza sizes and equal slices
 
@@ -52,7 +60,7 @@ Every unfinished pizza costs 5 points at its wave deadline, including the final 
 
 ## Your personal-best result
 
-The game shows **“Beat your best: N”**, where N is your Version 3.1 best score when the run began. The API reports:
+The game shows **“Beat your best: N”**, where N is your current best score when the run began, including records carried forward from Version 3.1. The API reports:
 
 - **Won:** your final score is **strictly higher** than that starting best.
 - **Lost:** your final score is equal to or below it.
@@ -86,7 +94,7 @@ git pull --ff-only origin main
 npm start
 ```
 
-Refresh the browser. If the pull cannot fast-forward, review the branch difference before continuing. Version 3.1 stores its records in `.data/rush-3.1.json`. On first use it imports existing profile IDs/names and their previous best from `.data/rush.json`, while keeping that older file untouched.
+Refresh the browser. If the pull cannot fast-forward, review the branch difference before continuing. Version 3.2 keeps your existing profiles, scores, and runs in `.data/rush-3.1.json`; this update does not reset them. If that file does not yet exist, the existing Version 3.0 profile import from `.data/rush.json` still applies.
 
 ### Run a ZIP locally
 
@@ -103,7 +111,7 @@ Profiles sit in a secondary panel so the solo game remains the main screen.
 | **Update** | Rename a profile. | `PATCH /api/players/:id` |
 | **Delete** | Delete a profile and its associated runs. | `DELETE /api/players/:id` |
 
-A public profile has `id`, `name`, `runsPlayed`, `runsWon`, `runsLost`, `bestScore`, `bestPizzaCount`, `totalPizzasCompleted`, and `previousBestScore`. The ordinary records belong to Version 3.1; `previousBestScore` holds the imported Version 3.0 best, or `null` for a new profile. Results and totals are settled once when a run ends. Name edits preserve identity and progress.
+A public profile has `id`, `name`, `runsPlayed`, `runsWon`, `runsLost`, `bestScore`, `bestPizzaCount`, `totalPizzasCompleted`, and `previousBestScore`. The current records continue from Version 3.1; `previousBestScore` holds the imported Version 3.0 best, or `null` for a new profile. Results and totals are settled once when a run ends. Name edits preserve identity and progress.
 
 ## How the REST API works
 
@@ -121,7 +129,9 @@ The browser sends actions and displays the API's **`{ run, player, feedback }`**
 
 The **request ID** identifies an action for safe retry. The **wave ID** identifies the batch it belongs to. A delayed stroke from an earlier wave cannot cut or damage new arrivals. Retry an uncertain action using the identical request ID, wave ID, and body. The server can apply that stroke to several pizzas in the wave.
 
-Coordinates use the **whole board**, not an individual pizza. The SVG board spans x = −150 to 150 and y = −140 to 140; input x/y values must be finite numbers from **−200 to 200**. The server supplies each pizza's position and radius. Pointer input uses the inverse SVG screen matrix to map the visible board to these coordinates; keyboard input uses `strokeForPizza` for its selected pizza.
+The API uses the same fixed **board coordinates** as Version 3.1. The SVG board spans x = −150 to 150 and y = −140 to 140; input x/y values must be finite numbers from **−200 to 200**. The server supplies each pizza's position and radius. Pointer input uses the moving batch group's inverse screen matrix, `getScreenCTM().inverse()`, to map the visible pizza back to those fixed coordinates. Keyboard input uses `strokeForPizza` for its selected pizza.
+
+Before sending a stroke, `clipStrokeToBounds` clips the **whole straight segment** to the permitted coordinate square, preserving its direction and angle. It does not move the two endpoints independently. The cut body remains `{ requestId, waveId, start, end }`, and recovery retains the exact clipped body for retry.
 
 Names contain 1–24 characters after trimming; request IDs contain 1–100. The server retains all active runs and the latest 100 finished runs, with up to 2,000 retained start/cut request IDs per run. Retry protection applies while that history remains. Reaching the request cap does not stop wave expiry or final settlement.
 
@@ -146,9 +156,9 @@ async function sendCutExample(runId, waveId, requestId, start, end) {
 
 The three-second preparation is outside the minute. Each wave shares the original run clock. Before accepting a cut, the server expires any due waves, applies missed-pizza penalties, and settles the run if its minute has ended. A cut processed at or after the run deadline cannot change the settled score. Network and server-queue delays affect when an action is processed.
 
-Refreshing, switching tabs, or restarting the server does not pause or reset the saved run. Starting again for the same profile resumes its active run. After a connection problem, retry/recover the existing action and read the server's result. Profile changes are disabled while a run or uncertain action is active.
+Refreshing, switching tabs, or restarting the server does not pause or reset the saved run. Starting again for the same profile resumes its active run. After a connection problem, retry/recover the existing action and read the server's result. Version 3.2 keeps the compatible Version 3.1 recovery session key and action bodies. Profile changes are disabled while a run or uncertain action is active.
 
-Players and runs are saved together in **`.data/rush-3.1.json`** through atomic updates. If that file is missing, the server imports valid profile IDs, names, and previous best scores from **`.data/rush.json`**, when available. New Version 3.1 records start at zero; older runs are not imported. The entire older file stays untouched.
+Players and runs remain together in **`.data/rush-3.1.json`** through atomic updates. Existing scores, profile IDs, and runs continue unchanged by the visual upgrade. If that file is missing, the server imports valid profile IDs, names, and previous best scores from **`.data/rush.json`**, when available, with new current-mode records starting at zero. Version 3.0 runs are not imported, and the entire older file stays untouched.
 
 The import is saved once, so a later rename or deletion is not undone by importing again. If neither data file exists, begin by creating a profile. Invalid saved data produces an error instead of silently resetting records.
 
@@ -161,17 +171,18 @@ Runtime data is excluded from Git. The same Codespace retains its data across re
 | `index.html` | Game board, score, run/wave timers, controls, and profile panel. |
 | `style.css` | Layout, feedback, hazard appearance, and reduced-motion/mobile styling. |
 | `script.js` | Input, REST requests, recovery, and rendering server state. |
+| `motion.js` | Pure entrance-offset and whole-segment clipping helpers. |
 | `game.js` | Scheduled waves, first-cut geometry, multi-pizza scoring, and grenade collision. |
 | `game-rules.json` | Mode `arcade-3.1`, 60,000 ms run, 3,000 ms preparation, 5,000 ms waves, and the three pizza mappings. |
 | `server.js` | API routes, validation, atomic storage, and exactly-once result settlement. |
-| `test/` | Automated game-rule and API/storage checks. |
+| `test/` | Automated motion, game-rule, and API/storage checks. |
 | `ASSESSMENT.md` | Requirement mapping, browser checklist, and explanation practice. |
 
-`SCORE_RULES` and `DIFFICULTY_LEVELS` are constants in `game.js`. The UI can read them for labels; the API awards points. The server loads and validates JSON settings at startup, so restart it after a permitted configuration change. Existing runs keep their rules and deadline snapshot.
+`SCORE_RULES` and `DIFFICULTY_LEVELS` are constants in `game.js`. The UI can read them for labels; the API awards points. The compatible scoring mode remains `arcade-3.1`; Version 3.2 adds the entrance in `motion.js` and the interface. The server loads and validates JSON settings at startup, so restart it after a permitted configuration change. Existing runs keep their rules and deadline snapshot.
 
 ## Verification and later code changes
 
-**Version 3.1 verification:** `npm run check` passes and `npm test` passes **45 of 45 tests**: **30 shared game-rule tests and 15 API/storage tests**, with **zero failures**. Static checks cover **78 ID selectors and 89 unique HTML IDs**; all ARIA, label, and local-asset references resolve. Browser playtesting and layout checks have not been performed here; automated and static checks do not replace those observations.
+**Version 3.2 verification:** `npm run check` passes and `npm test` passes **52 of 52 tests**: **7 motion, 30 shared game-rule, and 15 API/storage tests**, with **zero failures**. Static checks cover **79 ID selectors, 90 unique HTML IDs, and 80 element properties**; ARIA, label, local-asset, and imported-module server routes resolve. Source review confirms the shared moving frame, separate outcome effects, frozen inverse input mapping, compatible retries/keyboard input, continuing clocks, and scheduled entrance recovery. Version 3.2 browser playtesting and layout checks have not been performed here; automated and static checks do not replace those observations.
 
 Run these commands from the project folder:
 
@@ -185,7 +196,7 @@ After editing code, inspect and save the intended changes:
 ```text
 git status
 git add .
-git commit -m "Improve Pizza Slice Rush Version 3.1"
+git commit -m "Improve Pizza Slice Rush Version 3.2"
 git push origin main
 ```
 

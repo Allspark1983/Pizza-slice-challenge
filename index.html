@@ -3,9 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Pizza Slice Rush Version 3.1. A solo 60-second arcade game: slice several pizzas at once, avoid grenades, and beat your own best score in five-second batches." />
+    <meta name="description" content="Pizza Slice Rush Version 3.2. A solo 60-second arcade game: cut pizzas as they slide in from the left, avoid grenades, and beat your own best score in five-second batches." />
     <meta name="theme-color" content="#fcf7ed" />
-    <title>Pizza Slice Rush · Version 3.1 · Four Pizza</title>
+    <title>Pizza Slice Rush · Version 3.2 · Four Pizza</title>
     <link rel="stylesheet" href="style.css" />
     <script type="module" src="script.js"></script>
   </head>
@@ -13,7 +13,7 @@
     <a class="skip-link" href="#pizza-board">Skip to the pizza board</a>
     <header class="site-header">
       <div class="header-inner">
-        <div class="brand"><span class="brand-mark" aria-hidden="true">🍕</span><p class="brand-name">Four Pizza <span>The little arcade</span></p><span class="version-badge">Version 3.1</span></div>
+        <div class="brand"><span class="brand-mark" aria-hidden="true">🍕</span><p class="brand-name">Four Pizza <span>The little arcade</span></p><span class="version-badge">Version 3.2</span></div>
         <p id="connection-status" role="status" aria-live="polite">Loading your profile…</p>
       </div>
     </header>
@@ -63,15 +63,17 @@
                   <g class="grenade-art"><path d="M-4 -11 L-4 -17 L5 -17 L5 -10" fill="#8b9770" stroke="#39422d" stroke-width="1.8" /><path d="M5 -16 L10 -18 L15 -11" fill="none" stroke="#39422d" stroke-width="2.5" stroke-linecap="round" /><ellipse cx="0" cy="3" rx="13" ry="14" fill="#657b42" stroke="#354729" stroke-width="2" /><path d="M-11 -2 H11 M-12 5 H12 M-8 11 H8 M-4 -10 V15 M4 -10 V15" fill="none" stroke="#354729" stroke-width="1.4" /><path d="M-1 -4 H2 V4 H-1 Z M-1 7 H2 V10 H-1 Z" fill="#fff2bd" /></g>
                 </g>
               </defs>
-              <g id="pizzas-layer"></g>
-              <g id="grenades-layer" pointer-events="none"></g>
+              <g id="batch-motion" transform="translate(0 0)">
+                <g id="pizzas-layer"></g>
+                <g id="grenades-layer" pointer-events="none"></g>
+                <g id="blade-layer" visibility="hidden"><line id="blade-shadow" class="blade-shadow" /><line id="blade-line" class="blade-line" /></g>
+              </g>
               <g id="pizza-feedback-layer" pointer-events="none"></g>
-              <g id="blade-layer" visibility="hidden"><line id="blade-shadow" class="blade-shadow" /><line id="blade-line" class="blade-line" /></g>
             </svg>
           </div>
           <div class="board-counter"><span id="board-summary">Your first batch is waiting</span></div>
           <div class="hazard-row"><span id="hazard-status" class="hazard-status" aria-live="off">No active grenade</span><span>One swipe can cut several pizzas</span></div>
-          <p id="cut-instructions" class="cut-instructions"><strong>Your first cut sets the direction.</strong> Swipe right through a pizza’s centre, then space your cuts evenly to make its required slices. Finish the batch before its timer runs out. Avoid grenades, even on short swipes.</p>
+          <p id="cut-instructions" class="cut-instructions"><strong>Your first cut sets the direction.</strong> New batches slide in from the left. Swipe through a pizza’s centre, then space your cuts evenly to make its required slices. Finish the batch before its timer runs out. Avoid grenades, even on short swipes.</p>
           <details id="keyboard-controls" class="keyboard-controls"><summary>Use the keyboard blade</summary><div class="keyboard-inner">
             <label for="target-pizza">Pizza to aim at</label><select id="target-pizza" aria-describedby="keyboard-help" disabled><option value="">No pizza on the board</option></select>
             <div class="angle-heading"><label for="blade-angle">Blade angle</label><output id="blade-angle-value" for="blade-angle">0°</output></div>
@@ -90,8 +92,8 @@
           <p class="section-copy">Every run is you against your own record.</p>
           <label for="player-select">Profile</label><select id="player-select" aria-describedby="player-message"><option value="">Create a profile first</option></select>
           <div class="profile-actions"><button id="edit-profile" class="text-button" type="button" disabled>Rename</button><button id="delete-profile" class="text-button text-danger" type="button" disabled>Delete</button></div>
-          <dl class="profile-record"><div><dt>Best score · 3.1</dt><dd id="profile-best-score">0</dd></div><div><dt>Most pizzas in a run</dt><dd id="profile-best-pizzas">0</dd></div><div><dt>Runs played</dt><dd id="profile-runs-played">0</dd></div><div><dt>Total pizzas</dt><dd id="profile-total-pizzas">0</dd></div><div><dt>Wins</dt><dd id="profile-runs-won">0</dd></div><div><dt>Losses</dt><dd id="profile-runs-lost">0</dd></div></dl>
-          <p id="previous-best-record" class="previous-record" hidden>Previous Version 3.0 best: <strong id="previous-best-score">0</strong> points. This version starts a fresh record.</p>
+          <dl class="profile-record"><div><dt>Best score · 3.2</dt><dd id="profile-best-score">0</dd></div><div><dt>Most pizzas in a run</dt><dd id="profile-best-pizzas">0</dd></div><div><dt>Runs played</dt><dd id="profile-runs-played">0</dd></div><div><dt>Total pizzas</dt><dd id="profile-total-pizzas">0</dd></div><div><dt>Wins</dt><dd id="profile-runs-won">0</dd></div><div><dt>Losses</dt><dd id="profile-runs-lost">0</dd></div></dl>
+          <p id="previous-best-record" class="previous-record" hidden>Previous Version 3.0 best: <strong id="previous-best-score">0</strong> points. Your current record continues from Version 3.1.</p>
           <details id="profile-editor" class="profile-editor" open><summary id="profile-editor-title">Add a profile</summary>
             <form id="player-form" class="player-form"><h3 id="player-form-title" class="sr-only">Add a profile</h3><label for="player-name">Name</label><input id="player-name" name="playerName" type="text" placeholder="Your name" required minlength="1" maxlength="24" autocomplete="nickname" aria-describedby="player-name-help player-message" /><p id="player-name-help" class="field-help">1–24 characters.</p><div class="form-actions"><button id="player-submit" class="button button-primary" type="submit">Add profile</button><button id="cancel-edit" class="button button-secondary" type="button" hidden>Cancel</button></div></form>
           </details>
@@ -102,12 +104,12 @@
 
       <section class="how-to" aria-labelledby="how-to-title"><h2 id="how-to-title">The Rush rules</h2>
         <div class="point-rules"><p><strong id="complete-points">+10</strong><span>Complete a pizza</span></p><p><strong id="wrong-penalty">−5</strong><span>Wrong complete cut</span></p><p><strong id="grenade-penalty">−10</strong><span>Swipe a grenade</span></p><p><strong id="missed-penalty">−5</strong><span>Miss a pizza</span></p></div>
-        <p id="timing-summary" class="rules-note">3 seconds to prepare, then a full 60 seconds. Fresh batches every 5 seconds: 1 pizza at first, 2 after 20 seconds, and 3 after 40 seconds.</p>
+        <p id="timing-summary" class="rules-note">3 seconds to prepare, then a full 60 seconds. Fresh batches slide in from the left every 5 seconds: 1 pizza at first, 2 after 20 seconds, and 3 after 40 seconds.</p>
         <p class="rules-note">Unfinished pizzas cost 5 points each when the batch expires. Clear it early and wait for the next batch. Your score stays at zero or above. Away from grenades, incomplete swipes and duplicate cuts are ignored.</p>
         <ul id="size-rules" class="size-rules" aria-label="Pizza size and slice requirements"><li><strong>10″</strong><span>Small · 4 slices · 2 cuts, 90° apart</span></li><li><strong>12″</strong><span>Medium · 6 slices · 3 cuts, 60° apart</span></li><li><strong>14″</strong><span>Large · 8 slices · 4 cuts, 45° apart</span></li></ul>
       </section>
     </main>
-    <footer class="site-footer"><p>Four Pizza <span aria-hidden="true">·</span> Pizza Slice Rush <span aria-hidden="true">·</span> Version 3.1</p></footer>
+    <footer class="site-footer"><p>Four Pizza <span aria-hidden="true">·</span> Pizza Slice Rush <span aria-hidden="true">·</span> Version 3.2</p></footer>
     <dialog id="delete-dialog" class="delete-dialog" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description"><p class="eyebrow">Profile settings</p><h2 id="delete-dialog-title">Delete this profile?</h2><p id="delete-dialog-description">This removes <strong id="delete-player-name"></strong>, their saved runs, and their records. This cannot be undone.</p><div class="dialog-actions"><button id="cancel-delete" class="button button-secondary" type="button" autofocus>Keep profile</button><button id="confirm-delete" class="button button-danger" type="button">Delete profile</button></div></dialog>
   </body>
 </html>

@@ -1,4 +1,4 @@
-// Shared pure rules for Version 3.1. Coordinates use the whole board, not one pizza.
+// Shared scoring rules for Versions 3.1 and 3.2. Coordinates use the whole board.
 // The REST server owns the clocks, random batches, accepted cuts, and score.
 export const PIZZA_SLICES = Object.freeze({ 10: 4, 12: 6, 14: 8 });
 export const ARENA = Object.freeze({ left: -150, right: 150, top: -140, bottom: 140 });

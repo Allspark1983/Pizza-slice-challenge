@@ -21,6 +21,7 @@ const publicFiles = new Map([
   ['/style.css', ['style.css', 'text/css; charset=utf-8']],
   ['/script.js', ['script.js', 'text/javascript; charset=utf-8']],
   ['/game.js', ['game.js', 'text/javascript; charset=utf-8']],
+  ['/motion.js', ['motion.js', 'text/javascript; charset=utf-8']],
   ['/game-rules.json', ['game-rules.json', 'application/json; charset=utf-8']]
 ]);
 
@@ -609,7 +610,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     const server = await createAppServer();
     const host = process.env.HOST || '127.0.0.1';
     server.listen(Number(process.env.PORT || 3000), host, () => {
-      console.log(`Pizza Slice Rush Version 3.1 is running at http://${host}:${server.address().port}`);
+      console.log(`Pizza Slice Rush Version 3.2 is running at http://${host}:${server.address().port}`);
     });
   } catch (error) {
     console.error(error.message);

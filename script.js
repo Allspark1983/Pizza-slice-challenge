@@ -1,4 +1,5 @@
 import { validateRules, strokeForAngle, strokeForPizza, SCORE_RULES, DIFFICULTY_LEVELS } from './game.js';
+import { BATCH_ENTRY_MS, BATCH_ENTRY_DISTANCE, entranceOffset, clipStrokeToBounds } from './motion.js';
 
 // 1. SELECT: find page elements once. Timer ticks never replace the SVG or form.
 const elements = {
@@ -45,6 +46,7 @@ const elements = {
   hazardStatus: document.querySelector('#hazard-status'),
   pizzaBoard: document.querySelector('#pizza-board'),
   pizzaSVG: document.querySelector('#pizza-svg'),
+  batchMotion: document.querySelector('#batch-motion'),
   wholePizzaArt: document.querySelector('#whole-pizza-art'),
   pizzasLayer: document.querySelector('#pizzas-layer'),
   grenadeArtTemplate: document.querySelector('#grenade-art-template'),
@@ -86,6 +88,7 @@ const elements = {
 // 2. DATA: score, pizzas, difficulty, time, and verdicts come from the server.
 const recoveryKey = 'four-pizza-slice-rush.v3.1';
 const svgNamespace = 'http://www.w3.org/2000/svg';
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 let rules = {
   mode: 'arcade-3.1', runDurationMs: 60000, preparationMs: 3000, waveDurationMs: 5000,
   pizzas: [{ sizeInches: 10, slices: 4 }, { sizeInches: 12, slices: 6 }, { sizeInches: 14, slices: 8 }]
@@ -116,6 +119,11 @@ let renderedProfileKey = '';
 let feedbackTimer = null;
 let feedbackArtTimer = null;
 let feedbackSequence = 0;
+let motionFrame = null;
+let motionWaveId = null;
+let motionOffset = 0;
+let drawnMotionOffset = 0;
+let frozenMotion = null;
 
 function setText(element, value) {
   const text = String(value);
@@ -245,6 +253,7 @@ function clearRun() {
   cancelPointerStroke();
   clearFeedback();
   run = null;
+  resetBatchMotion();
   knownRunId = null;
   pendingAction = null;
   clockAnchor = null;
@@ -311,6 +320,9 @@ function applyEnvelope(envelope, action) {
     throw new Error('The run response could not be read.');
   }
   const previousRun = run;
+  const outcomeOffset = action.kind === 'cut' && envelope.run.status === 'playing' &&
+    previousRun?.waveId === envelope.run.waveId &&
+    frozenMotion?.waveId === envelope.run.waveId ? frozenMotion.offset : 0;
   if (!previousRun || previousRun.id !== envelope.run.id) {
     checkedBoundaries = new Set();
     announcedCountdown = null;
@@ -351,7 +363,7 @@ function applyEnvelope(envelope, action) {
   }
   const freshEvents = run.lastEvents.filter((event) => !seenEventIds.has(event.id));
   run.lastEvents.forEach((event) => seenEventIds.add(event.id));
-  if (previousRun?.id === run.id && freshEvents.length > 0) showPizzaFeedback(freshEvents);
+  if (previousRun?.id === run.id && freshEvents.length > 0) showPizzaFeedback(freshEvents, outcomeOffset);
   saveRecovery();
 }
 
@@ -360,7 +372,8 @@ async function performRunAction(action) {
   const previousFocus = document.activeElement;
   busy = true;
   requestFailure = '';
-  cancelPointerStroke();
+  if (action.kind === 'cut') clearPointerStroke();
+  else cancelPointerStroke();
   // Copy now so future pointer movement cannot change an uncertain request.
   pendingAction = JSON.parse(JSON.stringify(action));
   saveRecovery();
@@ -384,6 +397,7 @@ async function performRunAction(action) {
     saveRecovery();
   } finally {
     busy = false;
+    releaseBatchMotion();
     renderInterface();
     if (pendingAction) elements.retryAction.focus({ preventScroll: true });
     else if (isFinished()) elements.startRun.focus({ preventScroll: true });
@@ -526,6 +540,7 @@ function renderClock() {
   if (!interactive && pointerStroke) cancelPointerStroke();
   if (!canAim()) elements.bladeLayer.setAttribute('visibility', 'hidden');
   renderHazards();
+  renderBatchMotion();
 }
 
 function tickClock() {
@@ -535,6 +550,66 @@ function tickClock() {
   // One automatic GET per preparation, batch, or run deadline; no timer polling.
   checkedBoundaries.add(key);
   void performRunAction({ kind: 'refresh', playerId: run.playerId, runId: run.id, origin: 'phase' });
+}
+
+// One shared translation keeps pizza art, hazards, labels, and blade together.
+function stopMotionFrame() {
+  if (motionFrame !== null) cancelAnimationFrame(motionFrame);
+  motionFrame = null;
+}
+
+function drawBatchOffset(offset) {
+  if (offset === drawnMotionOffset) return;
+  elements.batchMotion.setAttribute('transform', 'translate(' + offset + ' 0)');
+  drawnMotionOffset = offset;
+}
+
+function resetBatchMotion() {
+  stopMotionFrame();
+  frozenMotion = null;
+  motionWaveId = null;
+  motionOffset = 0;
+  drawBatchOffset(0);
+}
+
+function renderBatchMotion() {
+  if (!run || isFinished()) { resetBatchMotion(); return; }
+  if (motionWaveId !== run.waveId) {
+    stopMotionFrame();
+    frozenMotion = null;
+    motionWaveId = run.waveId;
+    motionOffset = -BATCH_ENTRY_DISTANCE;
+  }
+  const now = estimatedServerTime();
+  if (frozenMotion?.waveId === run.waveId && now < run.waveEndsAt && !reducedMotion.matches) {
+    stopMotionFrame();
+    drawBatchOffset(frozenMotion.offset);
+    return;
+  }
+  frozenMotion = null;
+  const preparationEntry = run.waveIndex === 0 ? Math.min(BATCH_ENTRY_MS, rules.preparationMs) : 0;
+  const duration = preparationEntry || BATCH_ENTRY_MS;
+  const elapsed = (now - (run.waveStartsAt - preparationEntry)) * BATCH_ENTRY_MS / duration;
+  // Same-wave responses cannot move the entrance backwards or replay it.
+  motionOffset = Math.max(motionOffset, entranceOffset(elapsed, reducedMotion.matches));
+  drawBatchOffset(motionOffset);
+  if (!document.hidden && !reducedMotion.matches && elapsed >= 0 && elapsed < BATCH_ENTRY_MS && motionOffset < 0) {
+    if (motionFrame === null) motionFrame = requestAnimationFrame(() => {
+      motionFrame = null;
+      renderBatchMotion();
+    });
+  } else stopMotionFrame();
+}
+
+function freezeBatchMotion() {
+  // Hold the last drawn position before reading the group's inverse matrix.
+  stopMotionFrame();
+  frozenMotion = { waveId: run.waveId, offset: drawnMotionOffset };
+}
+
+function releaseBatchMotion() {
+  frozenMotion = null;
+  renderBatchMotion();
 }
 
 // 6. RENDER: safe profile text, several SVG pizzas, and confirmed cut lines.
@@ -679,7 +754,7 @@ function renderRules() {
   const preparation = rules.preparationMs > 0 ? rules.preparationMs / 1000 + ' seconds to prepare, then ' : 'Start straight into ';
   const levels = DIFFICULTY_LEVELS.map((level, index) => level.pizzasPerWave + (level.pizzasPerWave === 1 ? ' pizza' : ' pizzas') +
     (index === 0 ? ' at first' : ' after ' + level.startsAfterMs / 1000 + ' seconds')).join(', ');
-  setText(elements.timingSummary, preparation + 'a full ' + rules.runDurationMs / 1000 + ' seconds. Fresh batches every ' + rules.waveDurationMs / 1000 + ' seconds: ' + levels + '.');
+  setText(elements.timingSummary, preparation + 'a full ' + rules.runDurationMs / 1000 + ' seconds. Fresh batches slide in from the left every ' + rules.waveDurationMs / 1000 + ' seconds: ' + levels + '.');
   elements.sizeRules.replaceChildren(...rules.pizzas.map((pizza) => {
     const item = document.createElement('li');
     const size = document.createElement('strong');
@@ -733,7 +808,7 @@ function copyPizzaArt() {
   return art;
 }
 
-function showPizzaFeedback(events) {
+function showPizzaFeedback(events, offset = 0) {
   clearFeedback();
   const counts = { completed: 0, spoiled: 0, grenade: 0, missed: 0 };
   events.forEach((event) => { counts[event.outcome] += 1; });
@@ -747,10 +822,10 @@ function showPizzaFeedback(events) {
   elements.scoreFeedback.dataset.outcome = counts.grenade ? 'grenade' : (counts.spoiled ? 'spoiled' : (counts.missed ? 'missed' : 'completed'));
   elements.scoreFeedback.classList.add('is-visible');
   feedbackTimer = setTimeout(() => elements.scoreFeedback.classList.remove('is-visible'), 800);
-  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (reducedMotion.matches) return;
   // A late refresh can report many missed batches; keep the visual effect brief.
   events.slice(-3).forEach(({ pizza, outcome }) => {
-    const wrapper = svgElement('g', { transform: 'translate(' + pizza.x + ' ' + pizza.y + ') scale(' + pizza.radius / 100 + ')' });
+    const wrapper = svgElement('g', { transform: 'translate(' + (pizza.x + offset) + ' ' + pizza.y + ') scale(' + pizza.radius / 100 + ')' });
     elements.pizzaFeedbackLayer.append(wrapper);
     if (outcome === 'completed') {
       const angles = pizza.cutAngles.flatMap((angle) => [angle, angle + 180]).sort((a, b) => a - b);
@@ -813,28 +888,33 @@ function renderBlade() {
 }
 
 function pointerPoint(event) {
-  const matrix = elements.pizzaSVG.getScreenCTM();
+  const matrix = elements.batchMotion.getScreenCTM();
   if (!matrix || !run) return null;
   const point = elements.pizzaSVG.createSVGPoint();
   point.x = event.clientX;
   point.y = event.clientY;
-  // Inverse root-SVG transform gives shared world coordinates for any pizza size.
+  // The frozen batch matrix removes both screen scaling and its entrance offset.
   const local = point.matrixTransform(matrix.inverse());
-  const limit = (value) => Math.round(Math.max(-200, Math.min(200, value)) * 1000000) / 1000000;
-  return { x: limit(local.x), y: limit(local.y) };
+  return Number.isFinite(local.x) && Number.isFinite(local.y) ? { x: local.x, y: local.y } : null;
 }
 
-function cancelPointerStroke() {
+function clearPointerStroke() {
   const pointerID = pointerStroke?.pointerId;
   pointerStroke = null;
   if (pointerID !== undefined && elements.pizzaBoard.hasPointerCapture(pointerID)) elements.pizzaBoard.releasePointerCapture(pointerID);
   elements.bladeLayer.setAttribute('visibility', 'hidden');
 }
 
+function cancelPointerStroke() {
+  clearPointerStroke();
+  releaseBatchMotion();
+}
+
 function handlePointerDown(event) {
   if (!canCut() || !event.isPrimary || event.button !== 0 || pointerStroke) { tickClock(); return; }
+  freezeBatchMotion();
   const point = pointerPoint(event);
-  if (!point) return;
+  if (!point) { releaseBatchMotion(); return; }
   event.preventDefault();
   elements.pizzaBoard.focus({ preventScroll: true });
   pointerStroke = { pointerId: event.pointerId, waveId: run.waveId, start: point, end: point };
@@ -856,21 +936,26 @@ function handlePointerUp(event) {
   if (!pointerStroke || pointerStroke.pointerId !== event.pointerId) return;
   const stroke = pointerStroke;
   const point = pointerPoint(event);
-  cancelPointerStroke();
-  if (!point || !canCut() || stroke.waveId !== run?.waveId) { tickClock(); return; }
+  clearPointerStroke();
+  if (!point || !canCut() || stroke.waveId !== run?.waveId) { releaseBatchMotion(); tickClock(); return; }
   event.preventDefault();
   void submitCut({ start: stroke.start, end: point }, stroke.waveId, 'pointer');
 }
 
 async function submitCut(stroke, waveId, origin) {
-  if (!canCut() || waveId !== run.waveId) { tickClock(); return; }
+  if (!canCut() || waveId !== run.waveId) { releaseBatchMotion(); tickClock(); return; }
+  // Clip the complete pointer segment once; separate endpoint clamps bend cuts.
+  // Keyboard strokes and retried request bodies already use canonical bounds.
+  const submittedStroke = origin === 'pointer' ? clipStrokeToBounds(stroke) : stroke;
+  if (!submittedStroke) { releaseBatchMotion(); return; }
   await performRunAction({ kind: 'cut', playerId: run.playerId, runId: run.id, waveId: waveId,
-    requestId: crypto.randomUUID(), start: stroke.start, end: stroke.end, origin: origin });
+    requestId: crypto.randomUUID(), start: submittedStroke.start, end: submittedStroke.end, origin: origin });
 }
 
 function submitKeyboardCut() {
   const pizza = getTargetPizza();
   if (!canCut() || !pizza) { tickClock(); return; }
+  freezeBatchMotion();
   // The selected pizza sets position; the player's chosen angle stays unchanged.
   void submitCut(strokeForPizza(pizza, Number(elements.bladeAngle.value)), run.waveId, 'keyboard');
 }
@@ -1060,6 +1145,11 @@ elements.cancelDelete.addEventListener('click', () => { if (!busy) elements.dele
 elements.deleteDialog.addEventListener('cancel', (event) => { if (busy) event.preventDefault(); });
 elements.deleteDialog.addEventListener('close', () => { deletingPlayerId = null; });
 window.addEventListener('blur', cancelPointerStroke);
+reducedMotion.addEventListener('change', () => {
+  cancelPointerStroke();
+  renderBatchMotion();
+  renderBlade();
+});
 document.addEventListener('visibilitychange', () => {
   cancelPointerStroke();
   if (document.hidden) { tickClock(); return; }
