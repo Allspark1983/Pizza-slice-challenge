@@ -1,5 +1,7 @@
 # Pizza Slice Rush — Version 3.3
 
+> **Want to publish the game online?** See [DEPLOYMENT.md](DEPLOYMENT.md) for the Railway setup, persistent leaderboard storage, and security considerations.
+
 **Repository:** [Allspark1983/Pizza-slice-challenge](https://github.com/Allspark1983/Pizza-slice-challenge), branch **`main`**.
 
 A **solo 60-second game** built with HTML, CSS, plain JavaScript, and a Node.js REST API. Version 3.3 brings the **player name, score, timer, and pizzas into one arcade game screen**. Enter your name before starting, slice the pizzas arriving from the left, and see your name in the leaderboard after the minute ends. The API judges cuts, applies points and penalties, and decides the final result. Your Version 3.1 and Version 3.2 profiles and records continue in this update.
