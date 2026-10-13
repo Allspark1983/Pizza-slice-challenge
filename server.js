@@ -304,7 +304,7 @@ function validSavedState(state) {
 }
 
 export async function createAppServer({
-  dataFile = join(projectDirectory, '.data', 'rush-3.1.json'),
+  dataFile = join(process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || join(projectDirectory, '.data'), 'rush-3.1.json'),
   legacyDataFile = join(dirname(dataFile), 'rush.json'),
   publicDir = projectDirectory,
   clock = Date.now,
@@ -637,7 +637,7 @@ export async function createAppServer({
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   try {
     const server = await createAppServer();
-    const host = process.env.HOST || '127.0.0.1';
+    const host = process.env.HOST || (process.env.RAILWAY_PROJECT_ID ? '0.0.0.0' : '127.0.0.1');
     server.listen(Number(process.env.PORT || 3000), host, () => {
       console.log(`Pizza Slice Rush Version 3.3 is running at http://${host}:${server.address().port}`);
     });
